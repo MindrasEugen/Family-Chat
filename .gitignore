@@ -1,0 +1,4 @@
+*.bak
+System.Drawing.Drawing2D.GraphicsPath
+.DS_Store
+Thumbs.db

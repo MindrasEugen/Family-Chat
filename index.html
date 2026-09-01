@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Chat Famiglia</title>
+<link rel="stylesheet" href="style.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#2563eb">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Chat Famiglia">
+</head>
+<body>
+
+  <div id="loading-overlay" class="hidden">
+    <div class="spinner"></div>
+  </div>
+
+  <div id="device-name-overlay" class="modal-overlay hidden">
+    <div class="modal-card">
+      <h2>Come si chiama questo dispositivo?</h2>
+      <p class="modal-hint">Il nome apparirà sui messaggi inviati da qui, per riconoscere chi scrive (es. "Nonna Maria").</p>
+      <input id="device-name-input" type="text" placeholder="Es. Nonna Maria" maxlength="40" autocomplete="off">
+      <button id="device-name-confirm-btn" type="button">Conferma</button>
+    </div>
+  </div>
+
+  <main id="auth-section" class="card">
+    <div class="logo-container">
+      <img src="icons/icon-192.png" alt="Logo Chat Famiglia">
+    </div>
+    <h1>Accedi</h1>
+    <div class="field">
+      <label for="email">Email</label>
+      <input id="email" type="email" placeholder="nome@esempio.com" autocomplete="email">
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" type="password" placeholder="••••••••" autocomplete="current-password">
+    </div>
+    <div class="auth-buttons">
+      <button id="login-btn" type="button">Accedi</button>
+      <button id="signup-btn" type="button" class="secondary">Registrati</button>
+    </div>
+    <p id="auth-message" class="message"></p>
+  </main>
+
+  <main id="app-section" class="chat-app hidden">
+    <header class="app-header">
+      <h1>Chat Famiglia</h1>
+      <div class="header-actions">
+        <button id="notifications-toggle-btn" class="icon-toggle-btn" type="button" aria-label="Attiva o disattiva le notifiche"></button>
+        <button id="translation-toggle-btn" class="icon-toggle-btn" type="button" aria-label="Attiva o disattiva la traduzione automatica"></button>
+        <button id="logout-btn" class="secondary">Esci</button>
+      </div>
+    </header>
+
+    <ul id="message-list"></ul>
+
+    <p id="chat-message" class="message"></p>
+
+    <div id="photo-preview" class="photo-preview hidden">
+      <img id="photo-preview-img" alt="Anteprima foto">
+      <button id="photo-preview-remove" type="button">Rimuovi</button>
+    </div>
+
+    <form id="chat-form">
+      <label for="photo-input" class="attach-btn" aria-label="Allega una foto">📷</label>
+      <input id="photo-input" type="file" accept="image/*" hidden>
+      <input id="message-input" type="text" placeholder="Scrivi un messaggio..." maxlength="1000" autocomplete="off">
+      <button type="submit" class="send-btn" aria-label="Invia messaggio">➤</button>
+    </form>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="app.js"></script>
+</body>
+</html>
