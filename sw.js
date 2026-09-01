@@ -25,8 +25,6 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// Cache solo l'app shell same-origin: le chiamate a Supabase (API, auth,
-// realtime) restano sempre in rete, mai intercettate dal service worker.
 // Notifiche push: arrivano anche ad app chiusa o schermo spento, a
 // differenza della vibrazione via canale realtime (che richiede la pagina
 // attiva). Il payload arriva dalla Edge Function "send-push".
@@ -37,11 +35,24 @@ self.addEventListener("push", (event) => {
   } catch {}
 
   event.waitUntil(
-    self.registration.showNotification(data.title, {
-      body: data.body,
-      icon: "icons/icon-192.png",
-      badge: "icons/icon-192.png",
-      vibrate: [200],
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
+      // Controlla se almeno una finestra è visibile o in focus
+      const hasVisibleClient = clientList.some(
+        (client) => client.focused || client.visibilityState === "visible"
+      );
+
+      // Se c'è una finestra visibile, salta silenziosamente la notifica
+      if (hasVisibleClient) {
+        return Promise.resolve();
+      }
+
+      // Altrimenti mostra la notifica di sistema
+      return self.registration.showNotification(data.title, {
+        body: data.body,
+        icon: "icons/icon-192.png",
+        badge: "icons/icon-192.png",
+        vibrate: [200],
+      });
     })
   );
 });
@@ -57,6 +68,8 @@ self.addEventListener("notificationclick", (event) => {
   );
 });
 
+// Cache solo l'app shell same-origin: le chiamate a Supabase (API, auth,
+// realtime) restano sempre in rete, mai intercettate dal service worker.
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin || event.request.method !== "GET") return;
