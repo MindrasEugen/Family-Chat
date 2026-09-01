@@ -46,6 +46,7 @@ let loadingCount = 0;
 let currentUserId = null;
 let selectedPhotoFile = null;
 let previewObjectUrl = null;
+let chatStarted = false;
 
 function showLoading(isLoading) {
   loadingCount = Math.max(0, loadingCount + (isLoading ? 1 : -1));
@@ -403,7 +404,13 @@ function showApp(user) {
   }
 }
 
+// Supabase emette più eventi di autenticazione al caricamento della pagina
+// (es. sia getSession() che onAuthStateChange possono far scattare showApp),
+// quindi questo guardiano evita di avviare la chat (e in particolare la
+// sottoscrizione push) più di una volta per la stessa sessione.
 function startChat(user) {
+  if (chatStarted) return;
+  chatStarted = true;
   loadMessages();
   subscribeRealtime(user.id);
   cleanupOldMessages();
@@ -412,6 +419,7 @@ function startChat(user) {
 
 function showAuth() {
   currentUserId = null;
+  chatStarted = false;
   appSection.classList.add("hidden");
   authSection.classList.remove("hidden");
   deviceNameOverlay.classList.add("hidden");
