@@ -9,6 +9,7 @@ const PHOTO_BUCKET = "chat-photos";
 const SIGNED_URL_TTL_SECONDS = 60 * 60 * 24 * 7;
 const RETENTION_DAYS = 30;
 const TRANSLATE_FUNCTION = "translate-message";
+const VAPID_PUBLIC_KEY = "BJhBpx9peKaS2Ze3xFzAgQUb5hzRPI35LhCKi9eqNigP_xRDyM1haDB6RRhpRbIr48o-rX1XzPM10ay78LbjJrE";
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
@@ -301,6 +302,61 @@ async function cleanupOldMessages() {
   await supabaseClient.from("messages").delete().lt("created_at", cutoffIso);
 }
 
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+}
+
+// Sottoscrive questo dispositivo alle notifiche push del sistema operativo:
+// a differenza della vibrazione via canale realtime, queste arrivano anche
+// ad app chiusa o schermo spento. Richiede il permesso di notifica
+// all'utente e salva la sottoscrizione su Supabase, da dove la Edge
+// Function "send-push" la legge per inviare la notifica ad ogni nuovo
+// messaggio (tramite un Database Webhook configurato lato Supabase).
+async function setupPushSubscription() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") return;
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+    }
+    const json = subscription.toJSON();
+    await supabaseClient.from("push_subscriptions").upsert(
+      {
+        user_id: currentUserId,
+        device_name: getDeviceName(),
+        endpoint: json.endpoint,
+        p256dh: json.keys.p256dh,
+        auth: json.keys.auth,
+      },
+      { onConflict: "endpoint" }
+    );
+  } catch {
+    // Permesso negato o sottoscrizione fallita: l'app continua a funzionare
+    // normalmente, semplicemente senza notifiche push su questo dispositivo.
+  }
+}
+
+async function disablePushSubscription() {
+  if (!("serviceWorker" in navigator)) return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (subscription) {
+      await supabaseClient.from("push_subscriptions").delete().eq("endpoint", subscription.endpoint);
+      await subscription.unsubscribe();
+    }
+  } catch {}
+}
+
 function subscribeRealtime(userId) {
   if (realtimeChannel) {
     supabaseClient.removeChannel(realtimeChannel);
@@ -351,6 +407,7 @@ function startChat(user) {
   loadMessages();
   subscribeRealtime(user.id);
   cleanupOldMessages();
+  if (areNotificationsEnabled()) setupPushSubscription();
 }
 
 function showAuth() {
@@ -464,8 +521,14 @@ function updateToggleButtons() {
 }
 
 notificationsToggleBtn.addEventListener("click", () => {
-  setBoolPref("notificationsEnabled", !areNotificationsEnabled());
+  const enabling = !areNotificationsEnabled();
+  setBoolPref("notificationsEnabled", enabling);
   updateToggleButtons();
+  if (enabling) {
+    setupPushSubscription();
+  } else {
+    disablePushSubscription();
+  }
 });
 
 translationToggleBtn.addEventListener("click", () => {

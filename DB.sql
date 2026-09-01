@@ -108,6 +108,70 @@ to authenticated
 using (bucket_id = 'chat-photos' and (select auth.uid())::text = (storage.foldername(name))[1]);
 
 -- ---------------------------------------------------------
+-- Tabella push_subscriptions — Web Push (notifiche a schermo spento)
+-- ---------------------------------------------------------
+create table if not exists public.push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  device_name text,
+  endpoint text not null unique,
+  p256dh text not null,
+  auth text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.push_subscriptions enable row level security;
+
+create policy "push_subscriptions_select_own"
+on public.push_subscriptions
+for select
+to authenticated
+using ((select auth.uid()) = user_id);
+
+create policy "push_subscriptions_insert_own"
+on public.push_subscriptions
+for insert
+to authenticated
+with check ((select auth.uid()) = user_id);
+
+-- Necessaria per l'upsert (onConflict su "endpoint") che il client esegue
+-- per rinnovare una sottoscrizione push già esistente.
+create policy "push_subscriptions_update_own"
+on public.push_subscriptions
+for update
+to authenticated
+using ((select auth.uid()) = user_id)
+with check ((select auth.uid()) = user_id);
+
+create policy "push_subscriptions_delete_own"
+on public.push_subscriptions
+for delete
+to authenticated
+using ((select auth.uid()) = user_id);
+
+create index if not exists push_subscriptions_user_id_idx on public.push_subscriptions (user_id);
+
+-- ---------------------------------------------------------
+-- Database Webhook: invio Web Push su ogni nuovo messaggio
+-- ---------------------------------------------------------
+-- Configurato dal dashboard Supabase (Database → Webhooks) e non da questo
+-- file, perché richiede di incorporare un segreto (x-webhook-secret) in
+-- chiaro nella query — evitato qui per prudenza. Riportato come
+-- riferimento se preferisci crearlo via SQL Editor invece che da UI
+-- (sostituisci <SEGRETO> con il valore di PUSH_WEBHOOK_SECRET):
+--
+-- create trigger on_message_insert_send_push
+-- after insert on public.messages
+-- for each row
+-- execute function supabase_functions.http_request(
+--   'https://qamvkevkddfwyxhbftoy.supabase.co/functions/v1/send-push',
+--   'POST',
+--   '{"Content-Type":"application/json","x-webhook-secret":"<SEGRETO>"}',
+--   '{}',
+--   '5000'
+-- );
+
+-- ---------------------------------------------------------
 -- Nota: pulizia automatica messaggi oltre 30 giorni
 -- ---------------------------------------------------------
 -- Non gestita qui via pg_cron: richiederebbe la service_role key per
