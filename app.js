@@ -441,7 +441,6 @@ function onRoomMessageInsert(room, message) {
     renderMessage(room, message);
     setLastRead(room.userId, message.created_at);
     room.unreadCount = 0;
-    if (areNotificationsEnabled() && "vibrate" in navigator) navigator.vibrate(200);
   } else {
     room.unreadCount += 1;
   }
