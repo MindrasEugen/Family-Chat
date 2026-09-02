@@ -73,9 +73,9 @@ Per design (vedi README), tutti i membri di una "camera" usano le stesse credenz
 
 **Consigliato**: se possibile, versionare il codice sorgente delle Edge Function (senza i secret, che restano nel secret manager di Supabase) in una cartella `supabase/functions/` di questo repo, per tracciabilità e revisione futura.
 
-### 9. Igiene del repository (Info)
+### 9. Igiene del repository (Info) — **risolto** (2026-09-02)
 
-`app.js.bak` (versione precedente del file, con lo stesso `SUPABASE_ANON_KEY` pubblico) e un file immagine con nome anomalo (`System.Drawing.Drawing2D.GraphicsPath`, probabilmente un artefatto di un copia-incolla) sono presenti localmente ma correttamente esclusi da `.gitignore`, quindi non sono mai stati pushati. Nessun rischio nel repository remoto; consigliata solo una pulizia locale.
+`app.js.bak` (versione precedente del file, con lo stesso `SUPABASE_ANON_KEY` pubblico) e un file immagine con nome anomalo (`System.Drawing.Drawing2D.GraphicsPath`, probabilmente un artefatto di un copia-incolla) erano presenti localmente ma correttamente esclusi da `.gitignore`, quindi non sono mai stati pushati: nessun rischio era mai esistito nel repository remoto. Verificato e rimosso: `System.Drawing.Drawing2D.GraphicsPath` era un PNG 180×180 completamente bianco, senza contenuto reale né riferimenti nel codice; `app.js.bak` era ridondante (la cronologia completa di `app.js` resta comunque in git). Entrambi cancellati localmente; rimossa anche la riga specifica in `.gitignore` (non più necessaria).
 
 ## Cose verificate e risultate corrette
 
