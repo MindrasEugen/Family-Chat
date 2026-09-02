@@ -30,6 +30,7 @@
   </div>
 
   <main id="auth-section" class="card">
+    <button id="auth-back-btn" class="secondary hidden" type="button">← Indietro</button>
     <div class="logo-container">
       <img src="icons/icon-192.png" alt="Logo Chat Famiglia">
     </div>
@@ -49,13 +50,26 @@
     <p id="auth-message" class="message"></p>
   </main>
 
-  <main id="app-section" class="chat-app hidden">
+  <main id="room-list-section" class="rooms-app hidden">
     <header class="app-header">
       <h1>Chat Famiglia</h1>
       <div class="header-actions">
+        <button id="add-room-btn" class="icon-toggle-btn" type="button" aria-label="Aggiungi account/gruppo">➕</button>
+      </div>
+    </header>
+    <ul id="room-list"></ul>
+  </main>
+
+  <main id="app-section" class="chat-app hidden">
+    <header class="app-header">
+      <div class="header-title">
+        <button id="room-back-btn" class="icon-toggle-btn" type="button" aria-label="Torna alla lista camere">←</button>
+        <h1 id="room-title">Chat Famiglia</h1>
+      </div>
+      <div class="header-actions">
         <button id="notifications-toggle-btn" class="icon-toggle-btn" type="button" aria-label="Attiva o disattiva le notifiche"></button>
         <button id="translation-toggle-btn" class="icon-toggle-btn" type="button" aria-label="Attiva o disattiva la traduzione automatica"></button>
-        <button id="logout-btn" class="secondary">Esci</button>
+        <button id="logout-btn" class="secondary">Rimuovi</button>
       </div>
     </header>
 

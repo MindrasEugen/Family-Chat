@@ -187,3 +187,34 @@ create index if not exists push_subscriptions_user_id_idx on public.push_subscri
 -- nel database inutilizzata. Se vuoi rimuoverla manualmente:
 --   drop table if exists public.todos;
 -- ---------------------------------------------------------
+
+-- ---------------------------------------------------------
+-- Migrazione multi-camera: push_subscriptions per (endpoint, user_id)
+-- ---------------------------------------------------------
+-- Un solo browser/service worker ha un solo endpoint push, condiviso da
+-- tutte le "camere" (account) loggate sullo stesso device. Il vincolo
+-- UNIQUE era finora solo su endpoint: va ampliato a (endpoint, user_id)
+-- per permettere una riga per ciascuna camera che registra lo stesso
+-- endpoint. Nessuna riga esistente diventa orfana: oggi ogni endpoint
+-- compare già una sola volta, quindi soddisfa banalmente anche il nuovo
+-- vincolo composito.
+do $$
+declare
+  cname text;
+begin
+  select con.conname into cname
+  from pg_constraint con
+  join pg_class rel on rel.oid = con.conrelid
+  where rel.relname = 'push_subscriptions'
+    and con.contype = 'u'
+    and con.conkey = (
+      select array_agg(attnum) from pg_attribute
+      where attrelid = rel.oid and attname = 'endpoint'
+    );
+  if cname is not null then
+    execute format('alter table public.push_subscriptions drop constraint %I', cname);
+  end if;
+end $$;
+
+alter table public.push_subscriptions
+  add constraint push_subscriptions_endpoint_user_id_key unique (endpoint, user_id);

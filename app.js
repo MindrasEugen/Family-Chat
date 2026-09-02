@@ -1,15 +1,15 @@
-// Client Supabase: progetto dedicato "todo-list-app" (Supabase, eu-central-1).
+// Progetto Supabase dedicato "todo-list-app" (eu-central-1).
 // URL e anon key presi da Project Settings -> API su supabase.com.
 const SUPABASE_URL = "https://qamvkevkddfwyxhbftoy.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFhbXZrZXZrZGRmd3l4aGJmdG95Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgxOTQxMTQsImV4cCI6MjEwMzc3MDExNH0.CAJ3dYCJ84XHYKNPC5-KMAuK4nlS2vIPsQmGVOt0RvU";
-
-const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const PHOTO_BUCKET = "chat-photos";
 const SIGNED_URL_TTL_SECONDS = 60 * 60 * 24 * 7;
 const RETENTION_DAYS = 30;
 const TRANSLATE_FUNCTION = "translate-message";
 const VAPID_PUBLIC_KEY = "BJhBpx9peKaS2Ze3xFzAgQUb5hzRPI35LhCKi9eqNigP_xRDyM1haDB6RRhpRbIr48o-rX1XzPM10ay78LbjJrE";
+const ROOM_REGISTRY_KEY = "chatFamiglia.rooms";
+const PENDING_ROOM_KEY = "pendingRoomStorageKey";
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
@@ -19,7 +19,13 @@ if ("serviceWorker" in navigator) {
 
 // Riferimenti agli elementi del DOM
 const authSection = document.getElementById("auth-section");
+const authBackBtn = document.getElementById("auth-back-btn");
+const roomListSection = document.getElementById("room-list-section");
+const roomList = document.getElementById("room-list");
+const addRoomBtn = document.getElementById("add-room-btn");
 const appSection = document.getElementById("app-section");
+const roomBackBtn = document.getElementById("room-back-btn");
+const roomTitle = document.getElementById("room-title");
 const authMessage = document.getElementById("auth-message");
 const chatMessage = document.getElementById("chat-message");
 const emailInput = document.getElementById("email");
@@ -41,12 +47,18 @@ const deviceNameConfirmBtn = document.getElementById("device-name-confirm-btn");
 const notificationsToggleBtn = document.getElementById("notifications-toggle-btn");
 const translationToggleBtn = document.getElementById("translation-toggle-btn");
 
-let realtimeChannel = null;
+// Ogni "camera" è un account Supabase con la propria sessione, isolata dalle
+// altre tramite una storageKey dedicata: tutte restano vive contemporaneamente
+// (sessione, canale realtime, push) anche quando non sono quella aperta.
+const rooms = new Map(); // storageKey -> room
+let activeRoomKey = null;
+let pendingClient = null;
+let pendingStorageKey = null;
+let deviceNamePrompted = false;
+
 let loadingCount = 0;
-let currentUserId = null;
 let selectedPhotoFile = null;
 let previewObjectUrl = null;
-let chatStarted = false;
 
 function showLoading(isLoading) {
   loadingCount = Math.max(0, loadingCount + (isLoading ? 1 : -1));
@@ -103,9 +115,9 @@ function getDeviceLang() {
   return (navigator.language || "en").split("-")[0].toLowerCase();
 }
 
-// Nome del dispositivo: salvato solo in locale (localStorage), non è
-// legato all'account condiviso. Serve solo a mostrare "chi" ha scritto
-// un messaggio, dato che tutti i dispositivi usano lo stesso login.
+// Nome del dispositivo: salvato solo in locale (localStorage), condiviso da
+// tutte le camere di questo device. Serve solo a mostrare "chi" ha scritto
+// un messaggio, dato che più persone possono condividere lo stesso account/camera.
 function getDeviceName() {
   try {
     return localStorage.getItem("deviceName");
@@ -165,8 +177,16 @@ function showDeviceNamePrompt(onDone) {
   deviceNameInput.addEventListener("keydown", onKeydown);
 }
 
+function ensureDeviceNamePrompted() {
+  if (deviceNamePrompted || getDeviceName()) return;
+  deviceNamePrompted = true;
+  showDeviceNamePrompt(() => {});
+}
+
 // Cache locale (per dispositivo): evita di ritradurre lo stesso messaggio
 // ad ogni apertura dell'app, risparmiando chiamate e costo verso Mistral.
+// Le chiavi sono per messageId (UUID globalmente unico su tutte le camere,
+// che condividono la stessa tabella "messages"), nessun rischio di collisione.
 function getCachedTranslation(messageId, lang) {
   try {
     return localStorage.getItem(`translation_${messageId}_${lang}`);
@@ -181,12 +201,12 @@ function setCachedTranslation(messageId, lang, text) {
   } catch {}
 }
 
-async function translateText(messageId, text) {
+async function translateText(client, messageId, text) {
   const lang = getDeviceLang();
   const cached = getCachedTranslation(messageId, lang);
   if (cached) return cached;
   try {
-    const { data, error } = await supabaseClient.functions.invoke(TRANSLATE_FUNCTION, {
+    const { data, error } = await client.functions.invoke(TRANSLATE_FUNCTION, {
       body: { text, targetLang: lang },
     });
     if (error || !data?.translatedText) return null;
@@ -197,7 +217,7 @@ async function translateText(messageId, text) {
   }
 }
 
-async function renderMessage(message) {
+async function renderMessage(room, message) {
   if (messageList.querySelector(`li[data-id="${message.id}"]`)) return;
   const li = document.createElement("li");
   li.className = "chat-bubble";
@@ -220,7 +240,7 @@ async function renderMessage(message) {
   updateEmptyState();
 
   if (message.image_path) {
-    const { data, error } = await supabaseClient.storage
+    const { data, error } = await room.client.storage
       .from(PHOTO_BUCKET)
       .createSignedUrl(message.image_path, SIGNED_URL_TTL_SECONDS);
     if (!error && data?.signedUrl) {
@@ -231,7 +251,7 @@ async function renderMessage(message) {
   }
 
   if (message.content && isAutoTranslateEnabled()) {
-    const translated = await translateText(message.id, message.content);
+    const translated = await translateText(room.client, message.id, message.content);
     if (translated && translated !== message.content) {
       const textEl = li.querySelector(".bubble-text");
       if (textEl) textEl.textContent = translated;
@@ -266,10 +286,10 @@ function removeMessageFromList(id) {
   }, 250);
 }
 
-async function loadMessages() {
+async function loadMessages(room) {
   showLoading(true);
   messageList.innerHTML = "";
-  const { data, error } = await supabaseClient
+  const { data, error } = await room.client
     .from("messages")
     .select("*")
     .order("created_at", { ascending: true });
@@ -279,18 +299,51 @@ async function loadMessages() {
     updateEmptyState();
     return;
   }
-  data.forEach(renderMessage);
+  data.forEach((message) => renderMessage(room, message));
   updateEmptyState();
 }
 
+// Ultimo messaggio + conteggio non letti per la riga di questa camera nella
+// lista: il "letto" è tracciato per dispositivo (localStorage), non sincronizzato
+// tra i device della stessa camera — coerente con device_name, anch'esso locale.
+function getLastRead(userId) {
+  try {
+    return localStorage.getItem(`chatFamiglia.lastRead.${userId}`);
+  } catch {
+    return null;
+  }
+}
+
+function setLastRead(userId, iso) {
+  try {
+    localStorage.setItem(`chatFamiglia.lastRead.${userId}`, iso);
+  } catch {}
+}
+
+async function loadRoomPreview(room) {
+  const { data: last } = await room.client
+    .from("messages")
+    .select("id,content,image_path,device_name,created_at")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  room.lastMessage = last || null;
+  const lastReadIso = getLastRead(room.userId);
+  const { count } = await room.client
+    .from("messages")
+    .select("id", { count: "exact", head: true })
+    .gt("created_at", lastReadIso || "1970-01-01T00:00:00.000Z");
+  room.unreadCount = count || 0;
+}
+
 // Elimina i messaggi (e le foto collegate) più vecchi di RETENTION_DAYS.
-// Girando lato client con la sessione autenticata dell'utente, sfrutta le
+// Girando lato client con la sessione autenticata della camera, sfrutta le
 // stesse policy RLS già in vigore: nessun ruolo privilegiato o servizio
 // esterno necessario. Le eliminazioni si propagano agli altri dispositivi
 // tramite il canale realtime già sottoscritto.
-async function cleanupOldMessages() {
+async function cleanupOldMessages(room) {
   const cutoffIso = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  const { data: oldMessages, error: selectError } = await supabaseClient
+  const { data: oldMessages, error: selectError } = await room.client
     .from("messages")
     .select("id, image_path")
     .lt("created_at", cutoffIso);
@@ -298,9 +351,9 @@ async function cleanupOldMessages() {
 
   const imagePaths = oldMessages.filter((m) => m.image_path).map((m) => m.image_path);
   if (imagePaths.length > 0) {
-    supabaseClient.storage.from(PHOTO_BUCKET).remove(imagePaths).catch(() => {});
+    room.client.storage.from(PHOTO_BUCKET).remove(imagePaths).catch(() => {});
   }
-  await supabaseClient.from("messages").delete().lt("created_at", cutoffIso);
+  await room.client.from("messages").delete().lt("created_at", cutoffIso);
 }
 
 function urlBase64ToUint8Array(base64String) {
@@ -310,14 +363,13 @@ function urlBase64ToUint8Array(base64String) {
   return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
 }
 
-// Sottoscrive questo dispositivo alle notifiche push del sistema operativo:
-// a differenza della vibrazione via canale realtime, queste arrivano anche
-// ad app chiusa o schermo spento. Richiede il permesso di notifica
-// all'utente e salva la sottoscrizione su Supabase, da dove la Edge
-// Function "send-push" la legge per inviare la notifica ad ogni nuovo
-// messaggio (tramite un Database Webhook configurato lato Supabase).
-async function setupPushSubscription() {
-  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+// Sottoscrive questo dispositivo alle notifiche push del sistema operativo per
+// questa camera: a differenza della vibrazione via canale realtime, queste
+// arrivano anche ad app chiusa o schermo spento. Il browser ha un solo
+// endpoint push condiviso da tutte le camere: qui si registra solo la riga
+// DB (endpoint, user_id) per questa camera, il permesso/subscribe è per device.
+async function setupPushSubscriptionForRoom(room) {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !room.userId) return;
   try {
     const registration = await navigator.serviceWorker.ready;
     let subscription = await registration.pushManager.getSubscription();
@@ -330,53 +382,75 @@ async function setupPushSubscription() {
       });
     }
     const json = subscription.toJSON();
-    await supabaseClient.from("push_subscriptions").upsert(
+    await room.client.from("push_subscriptions").upsert(
       {
-        user_id: currentUserId,
+        user_id: room.userId,
         device_name: getDeviceName(),
         endpoint: json.endpoint,
         p256dh: json.keys.p256dh,
         auth: json.keys.auth,
       },
-      { onConflict: "endpoint" }
+      { onConflict: "endpoint,user_id" }
     );
   } catch {
     // Permesso negato o sottoscrizione fallita: l'app continua a funzionare
-    // normalmente, semplicemente senza notifiche push su questo dispositivo.
+    // normalmente, semplicemente senza notifiche push per questa camera.
   }
 }
 
-async function disablePushSubscription() {
-  if (!("serviceWorker" in navigator)) return;
+// Rimuove solo la riga di questa camera: l'endpoint push resta condiviso
+// dalle altre camere ancora attive su questo device, non va disiscritto qui.
+async function disablePushSubscriptionForRoom(room) {
+  if (!room.userId) return;
   try {
-    const registration = await navigator.serviceWorker.ready;
-    const subscription = await registration.pushManager.getSubscription();
-    if (subscription) {
-      await supabaseClient.from("push_subscriptions").delete().eq("endpoint", subscription.endpoint);
-      await subscription.unsubscribe();
-    }
+    await room.client.from("push_subscriptions").delete().eq("user_id", room.userId);
   } catch {}
 }
 
-function subscribeRealtime(userId) {
-  if (realtimeChannel) {
-    supabaseClient.removeChannel(realtimeChannel);
-  }
-  realtimeChannel = supabaseClient
-    .channel(`messages-changes-${userId}`)
-    .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `user_id=eq.${userId}` }, (payload) => {
-      renderMessage(payload.new);
-      if (areNotificationsEnabled() && "vibrate" in navigator) navigator.vibrate(200);
+async function unsubscribeSharedPushEndpoint() {
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (subscription) await subscription.unsubscribe();
+  } catch {}
+}
+
+function subscribeRealtimeForRoom(room) {
+  if (room.channel) room.client.removeChannel(room.channel);
+  room.channel = room.client
+    .channel(`messages-changes-${room.userId}`)
+    .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `user_id=eq.${room.userId}` }, (payload) => {
+      onRoomMessageInsert(room, payload.new);
     })
-    .on("postgres_changes", { event: "DELETE", schema: "public", table: "messages", filter: `user_id=eq.${userId}` }, (payload) => removeMessageFromList(payload.old.id))
+    .on("postgres_changes", { event: "DELETE", schema: "public", table: "messages", filter: `user_id=eq.${room.userId}` }, (payload) => {
+      onRoomMessageDelete(room, payload.old.id);
+    })
     .subscribe();
 }
 
-function unsubscribeRealtime() {
-  if (realtimeChannel) {
-    supabaseClient.removeChannel(realtimeChannel);
-    realtimeChannel = null;
+function unsubscribeRealtimeForRoom(room) {
+  if (room.channel) {
+    room.client.removeChannel(room.channel);
+    room.channel = null;
   }
+}
+
+function onRoomMessageInsert(room, message) {
+  room.lastMessage = message;
+  if (activeRoomKey === room.storageKey) {
+    renderMessage(room, message);
+    setLastRead(room.userId, message.created_at);
+    room.unreadCount = 0;
+    if (areNotificationsEnabled() && "vibrate" in navigator) navigator.vibrate(200);
+  } else {
+    room.unreadCount += 1;
+  }
+  renderRoomList();
+}
+
+function onRoomMessageDelete(room, id) {
+  if (activeRoomKey === room.storageKey) removeMessageFromList(id);
+  if (room.lastMessage?.id === id) loadRoomPreview(room).then(renderRoomList);
 }
 
 function clearPhotoSelection() {
@@ -390,63 +464,392 @@ function clearPhotoSelection() {
   photoPreview.classList.add("hidden");
 }
 
-function showApp(user) {
-  currentUserId = user.id;
-  authSection.classList.add("hidden");
-  appSection.classList.remove("hidden");
-  setMessage(authMessage, "");
-  emailInput.value = "";
-  passwordInput.value = "";
-  if (getDeviceName()) {
-    startChat(user);
-  } else {
-    showDeviceNamePrompt(() => startChat(user));
+function showScreen(name) {
+  authSection.classList.toggle("hidden", name !== "auth");
+  roomListSection.classList.toggle("hidden", name !== "rooms");
+  appSection.classList.toggle("hidden", name !== "chat");
+}
+
+function createSupabaseClientForRoom(storageKey, opts = {}) {
+  return window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: { storageKey, persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, ...opts },
+  });
+}
+
+function loadRoomRegistry() {
+  try {
+    return JSON.parse(localStorage.getItem(ROOM_REGISTRY_KEY)) || [];
+  } catch {
+    return [];
   }
 }
 
-// Supabase emette più eventi di autenticazione al caricamento della pagina
-// (es. sia getSession() che onAuthStateChange possono far scattare showApp),
-// quindi questo guardiano evita di avviare la chat (e in particolare la
-// sottoscrizione push) più di una volta per la stessa sessione.
-function startChat(user) {
-  if (chatStarted) return;
-  chatStarted = true;
-  loadMessages();
-  subscribeRealtime(user.id);
-  cleanupOldMessages();
-  if (areNotificationsEnabled()) setupPushSubscription();
+function saveRoomRegistry(entries) {
+  try {
+    localStorage.setItem(ROOM_REGISTRY_KEY, JSON.stringify(entries));
+  } catch {}
 }
 
-function showAuth() {
-  currentUserId = null;
-  chatStarted = false;
-  appSection.classList.add("hidden");
-  authSection.classList.remove("hidden");
-  deviceNameOverlay.classList.add("hidden");
-  messageList.innerHTML = "";
-  clearPhotoSelection();
-  unsubscribeRealtime();
+function upsertRegistryEntry(entry) {
+  const list = loadRoomRegistry().filter((e) => e.storageKey !== entry.storageKey);
+  list.push(entry);
+  saveRoomRegistry(list);
 }
+
+function removeRegistryEntry(storageKey) {
+  saveRoomRegistry(loadRoomRegistry().filter((e) => e.storageKey !== storageKey));
+}
+
+// Prima di questa funzione l'app aveva un solo account per device, con la
+// sessione nella storageKey di default di supabase-js. Al primo avvio dopo
+// l'aggiornamento la spostiamo su una storageKey "sb-room-*" dedicata e la
+// registriamo come prima camera, senza forzare un logout.
+function findLegacyStorageKey() {
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && /^sb-.*-auth-token$/.test(key) && !key.startsWith("sb-room-")) return key;
+  }
+  return null;
+}
+
+function migrateLegacySessionIfNeeded() {
+  if (loadRoomRegistry().length > 0) return;
+  const legacyKey = findLegacyStorageKey();
+  if (!legacyKey) return;
+  const value = localStorage.getItem(legacyKey);
+  if (!value) return;
+  const newKey = `sb-room-${crypto.randomUUID()}`;
+  localStorage.setItem(newKey, value);
+  localStorage.removeItem(legacyKey);
+  upsertRegistryEntry({ storageKey: newKey, userId: null, label: null, pendingConfirmation: false });
+}
+
+async function startRoom(room) {
+  room.chatStarted = true;
+  await Promise.all([loadRoomPreview(room), cleanupOldMessages(room)]);
+  subscribeRealtimeForRoom(room);
+  if (areNotificationsEnabled()) setupPushSubscriptionForRoom(room);
+  renderRoomList();
+}
+
+// Gestisce ogni cambio di sessione per una camera: prima registrazione,
+// refresh automatico, logout, o rientro dopo un login/relogin manuale.
+// È l'unico punto che avvia/riprende una camera, sia per il flusso
+// "aggiungi camera" sia per il ripristino da localStorage all'avvio.
+async function handleRoomAuthChange(room, session) {
+  if (session?.user) {
+    const duplicate = [...rooms.values()].find((r) => r !== room && r.userId === session.user.id);
+    if (duplicate) {
+      try {
+        await room.client.auth.signOut();
+      } catch {}
+      rooms.delete(room.storageKey);
+      try {
+        localStorage.removeItem(room.storageKey);
+      } catch {}
+      removeRegistryEntry(room.storageKey);
+      if (pendingStorageKey === room.storageKey) {
+        setMessage(authMessage, "Questo account è già stato aggiunto.", "error");
+      }
+      renderRoomList();
+      return;
+    }
+
+    const wasNeedsLogin = room.needsLogin;
+    room.userId = session.user.id;
+    room.label = room.label || session.user.email;
+    room.needsLogin = false;
+    room.pendingConfirmation = false;
+    upsertRegistryEntry({ storageKey: room.storageKey, userId: room.userId, label: room.label, pendingConfirmation: false });
+
+    if (!room.chatStarted) {
+      await startRoom(room);
+    } else if (wasNeedsLogin) {
+      subscribeRealtimeForRoom(room);
+      if (areNotificationsEnabled()) setupPushSubscriptionForRoom(room);
+    }
+    ensureDeviceNamePrompted();
+
+    if (pendingStorageKey === room.storageKey) {
+      pendingClient = null;
+      pendingStorageKey = null;
+      showScreen("rooms");
+    }
+  } else {
+    room.needsLogin = true;
+    unsubscribeRealtimeForRoom(room);
+  }
+  renderRoomList();
+  if (activeRoomKey === room.storageKey) refreshChatHeader(room);
+}
+
+async function initRoomFromRegistryEntry(entry) {
+  const client = createSupabaseClientForRoom(entry.storageKey);
+  const room = {
+    storageKey: entry.storageKey,
+    userId: entry.userId,
+    label: entry.label,
+    client,
+    channel: null,
+    chatStarted: false,
+    needsLogin: false,
+    pendingConfirmation: !!entry.pendingConfirmation,
+    lastMessage: null,
+    unreadCount: 0,
+  };
+  rooms.set(entry.storageKey, room);
+  client.auth.onAuthStateChange((_event, session) => handleRoomAuthChange(room, session));
+  const {
+    data: { session },
+  } = await client.auth.getSession();
+  await handleRoomAuthChange(room, session);
+}
+
+// Consuma il redirect di conferma email dopo una signUp: succede in un
+// caricamento di pagina completamente nuovo, quindi si affida a
+// localStorage (PENDING_ROOM_KEY) per sapere a quale camera "in sospeso"
+// appartiene la sessione appena confermata.
+async function consumePendingEmailConfirmation() {
+  const hasAuthParams = location.hash.includes("access_token") || new URLSearchParams(location.search).has("code");
+  const storageKey = localStorage.getItem(PENDING_ROOM_KEY);
+  if (!hasAuthParams || !storageKey) return;
+  localStorage.removeItem(PENDING_ROOM_KEY);
+
+  const client = createSupabaseClientForRoom(storageKey, { detectSessionInUrl: true });
+  const room = {
+    storageKey,
+    userId: null,
+    label: null,
+    client,
+    channel: null,
+    chatStarted: false,
+    needsLogin: true,
+    pendingConfirmation: false,
+    lastMessage: null,
+    unreadCount: 0,
+  };
+  rooms.set(storageKey, room);
+  client.auth.onAuthStateChange((_event, session) => handleRoomAuthChange(room, session));
+  const {
+    data: { session },
+  } = await client.auth.getSession();
+  history.replaceState(null, "", location.pathname);
+  await handleRoomAuthChange(room, session);
+}
+
+function startAddRoomFlow({ isFirstRoom }) {
+  const storageKey = `sb-room-${crypto.randomUUID()}`;
+  const client = createSupabaseClientForRoom(storageKey, { detectSessionInUrl: true });
+  const room = {
+    storageKey,
+    userId: null,
+    label: null,
+    client,
+    channel: null,
+    chatStarted: false,
+    needsLogin: true,
+    pendingConfirmation: false,
+    lastMessage: null,
+    unreadCount: 0,
+  };
+  rooms.set(storageKey, room);
+  client.auth.onAuthStateChange((_event, session) => handleRoomAuthChange(room, session));
+
+  pendingClient = client;
+  pendingStorageKey = storageKey;
+  authBackBtn.classList.toggle("hidden", isFirstRoom);
+  setMessage(authMessage, "");
+  emailInput.value = "";
+  passwordInput.value = "";
+  showScreen("auth");
+}
+
+function startReloginFlow(room) {
+  pendingClient = room.client;
+  pendingStorageKey = room.storageKey;
+  authBackBtn.classList.remove("hidden");
+  setMessage(authMessage, "");
+  emailInput.value = "";
+  passwordInput.value = "";
+  showScreen("auth");
+}
+
+async function removeRoom(storageKey) {
+  const room = rooms.get(storageKey);
+  if (!room) return;
+  await disablePushSubscriptionForRoom(room);
+  unsubscribeRealtimeForRoom(room);
+  try {
+    await room.client.auth.signOut();
+  } catch {}
+  try {
+    localStorage.removeItem(storageKey);
+  } catch {}
+  if (room.userId) {
+    try {
+      localStorage.removeItem(`chatFamiglia.lastRead.${room.userId}`);
+    } catch {}
+  }
+  rooms.delete(storageKey);
+  removeRegistryEntry(storageKey);
+  if (rooms.size === 0) await unsubscribeSharedPushEndpoint();
+  if (activeRoomKey === storageKey) {
+    closeRoomToList();
+  } else {
+    renderRoomList();
+  }
+}
+
+function notifyServiceWorkerActiveRoom(userId) {
+  navigator.serviceWorker.controller?.postMessage({ type: "ACTIVE_ROOM", roomId: userId || null });
+}
+
+function refreshChatHeader(room) {
+  roomTitle.textContent = room.label || "Chat Famiglia";
+}
+
+function openRoom(storageKey) {
+  const room = rooms.get(storageKey);
+  if (!room || !room.userId) return;
+  activeRoomKey = storageKey;
+  showScreen("chat");
+  refreshChatHeader(room);
+  setMessage(chatMessage, "");
+  clearPhotoSelection();
+  loadMessages(room);
+  setLastRead(room.userId, new Date().toISOString());
+  room.unreadCount = 0;
+  renderRoomList();
+  notifyServiceWorkerActiveRoom(room.userId);
+}
+
+function closeRoomToList() {
+  activeRoomKey = null;
+  messageList.innerHTML = "";
+  showScreen("rooms");
+  renderRoomList();
+  notifyServiceWorkerActiveRoom(null);
+}
+
+function openRoomByUserId(userId) {
+  const entry = [...rooms.entries()].find(([, r]) => r.userId === userId);
+  if (entry) openRoom(entry[0]);
+}
+
+function maybeOpenRoomFromUrl() {
+  const roomParam = new URLSearchParams(location.search).get("room");
+  if (!roomParam) return;
+  openRoomByUserId(roomParam);
+  history.replaceState(null, "", location.pathname);
+}
+
+function roomInitial(label) {
+  return (label || "?").trim().charAt(0).toUpperCase() || "?";
+}
+
+function formatPreviewText(message) {
+  if (!message) return "Nessun messaggio";
+  if (message.content) return message.content;
+  if (message.image_path) return "📷 Foto";
+  return "";
+}
+
+function renderRoomList() {
+  const entries = [...rooms.values()].sort((a, b) => (b.lastMessage?.created_at || "").localeCompare(a.lastMessage?.created_at || ""));
+  roomList.innerHTML = "";
+  for (const room of entries) {
+    const li = document.createElement("li");
+    li.className = "room-row" + (room.needsLogin ? " needs-login" : "");
+    li.dataset.storageKey = room.storageKey;
+    const time = room.lastMessage ? new Date(room.lastMessage.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+    const previewText = room.needsLogin
+      ? "Tocca per accedere di nuovo"
+      : room.pendingConfirmation
+      ? "In attesa di conferma email"
+      : formatPreviewText(room.lastMessage);
+    li.innerHTML = `
+      <div class="room-avatar">${escapeHtml(roomInitial(room.label))}</div>
+      <div class="room-info">
+        <div class="room-label">${escapeHtml(room.label || "Camera")}</div>
+        <div class="room-preview">${escapeHtml(previewText)}</div>
+      </div>
+      <div class="room-meta">
+        <span class="room-time">${time}</span>
+        ${room.unreadCount > 0 ? `<span class="room-unread-badge">${room.unreadCount}</span>` : ""}
+      </div>
+    `;
+    roomList.appendChild(li);
+  }
+}
+
+roomList.addEventListener("click", (e) => {
+  const li = e.target.closest(".room-row");
+  if (!li) return;
+  const room = rooms.get(li.dataset.storageKey);
+  if (!room) return;
+  if (room.needsLogin) {
+    startReloginFlow(room);
+  } else {
+    openRoom(room.storageKey);
+  }
+});
+
+addRoomBtn.addEventListener("click", () => startAddRoomFlow({ isFirstRoom: false }));
+
+roomBackBtn.addEventListener("click", closeRoomToList);
+
+authBackBtn.addEventListener("click", () => {
+  const room = pendingStorageKey ? rooms.get(pendingStorageKey) : null;
+  if (room && !room.userId) {
+    rooms.delete(pendingStorageKey);
+    try {
+      localStorage.removeItem(pendingStorageKey);
+    } catch {}
+  }
+  pendingClient = null;
+  pendingStorageKey = null;
+  showScreen("rooms");
+});
 
 loginBtn.addEventListener("click", async () => {
+  if (!pendingClient) return;
   setMessage(authMessage, "");
   showLoading(true);
-  const { error } = await supabaseClient.auth.signInWithPassword({ email: emailInput.value, password: passwordInput.value });
+  const { error } = await pendingClient.auth.signInWithPassword({ email: emailInput.value, password: passwordInput.value });
   showLoading(false);
   if (error) setMessage(authMessage, error.message, "error");
 });
 
 signupBtn.addEventListener("click", async () => {
+  if (!pendingClient) return;
   setMessage(authMessage, "");
   showLoading(true);
-  const { error } = await supabaseClient.auth.signUp({ email: emailInput.value, password: passwordInput.value });
+  const { data, error } = await pendingClient.auth.signUp({ email: emailInput.value, password: passwordInput.value });
   showLoading(false);
-  if (error) { setMessage(authMessage, error.message, "error"); } else { setMessage(authMessage, "Registrazione avvenuta. Controlla la tua email per confermare l'account.", "success"); }
+  if (error) {
+    setMessage(authMessage, error.message, "error");
+    return;
+  }
+  if (!data.session) {
+    const room = rooms.get(pendingStorageKey);
+    if (room) {
+      room.pendingConfirmation = true;
+      room.label = emailInput.value;
+      upsertRegistryEntry({ storageKey: room.storageKey, userId: null, label: room.label, pendingConfirmation: true });
+    }
+    try {
+      localStorage.setItem(PENDING_ROOM_KEY, pendingStorageKey);
+    } catch {}
+    setMessage(authMessage, "Registrazione avvenuta. Controlla la tua email per confermare l'account.", "success");
+  }
 });
 
 logoutBtn.addEventListener("click", async () => {
+  const room = activeRoomKey ? rooms.get(activeRoomKey) : null;
+  if (!room) return;
+  if (!confirm(`Rimuovere "${room.label || "questa camera"}" da questo dispositivo?`)) return;
   showLoading(true);
-  await supabaseClient.auth.signOut();
+  await removeRoom(room.storageKey);
   showLoading(false);
 });
 
@@ -472,6 +875,8 @@ photoPreviewRemoveBtn.addEventListener("click", () => {
 
 chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
+  const room = activeRoomKey ? rooms.get(activeRoomKey) : null;
+  if (!room) return;
   const text = messageInput.value.trim();
   if (!text && !selectedPhotoFile) return;
   setMessage(chatMessage, "");
@@ -480,13 +885,13 @@ chatForm.addEventListener("submit", async (e) => {
     let imagePath = null;
     if (selectedPhotoFile) {
       const compressed = await compressImage(selectedPhotoFile);
-      imagePath = `${currentUserId}/${crypto.randomUUID()}.jpg`;
-      const { error: uploadError } = await supabaseClient.storage
+      imagePath = `${room.userId}/${crypto.randomUUID()}.jpg`;
+      const { error: uploadError } = await room.client.storage
         .from(PHOTO_BUCKET)
         .upload(imagePath, compressed, { contentType: "image/jpeg" });
       if (uploadError) throw uploadError;
     }
-    const { error } = await supabaseClient.from("messages").insert({ content: text || null, image_path: imagePath, device_name: getDeviceName() });
+    const { error } = await room.client.from("messages").insert({ content: text || null, image_path: imagePath, device_name: getDeviceName() });
     if (error) throw error;
     messageInput.value = "";
     clearPhotoSelection();
@@ -499,15 +904,20 @@ chatForm.addEventListener("submit", async (e) => {
 
 messageList.addEventListener("click", async (e) => {
   if (!e.target.matches(".msg-delete-btn")) return;
+  const room = activeRoomKey ? rooms.get(activeRoomKey) : null;
+  if (!room) return;
   const id = e.target.dataset.id;
   const li = messageList.querySelector(`li[data-id="${id}"]`);
   const imagePath = li?.dataset.imagePath || "";
   showLoading(true);
-  const { error } = await supabaseClient.from("messages").delete().eq("id", id);
+  const { error } = await room.client.from("messages").delete().eq("id", id);
   showLoading(false);
-  if (error) { setMessage(chatMessage, "Errore nell'eliminazione del messaggio.", "error"); return; }
+  if (error) {
+    setMessage(chatMessage, "Errore nell'eliminazione del messaggio.", "error");
+    return;
+  }
   if (imagePath) {
-    supabaseClient.storage.from(PHOTO_BUCKET).remove([imagePath]).catch(() => {});
+    room.client.storage.from(PHOTO_BUCKET).remove([imagePath]).catch(() => {});
   }
   removeMessageFromList(id);
 });
@@ -533,9 +943,11 @@ notificationsToggleBtn.addEventListener("click", () => {
   setBoolPref("notificationsEnabled", enabling);
   updateToggleButtons();
   if (enabling) {
-    setupPushSubscription();
+    rooms.forEach((room) => {
+      if (room.userId) setupPushSubscriptionForRoom(room);
+    });
   } else {
-    disablePushSubscription();
+    Promise.all([...rooms.values()].map(disablePushSubscriptionForRoom)).then(unsubscribeSharedPushEndpoint);
   }
 });
 
@@ -546,10 +958,30 @@ translationToggleBtn.addEventListener("click", () => {
 
 updateToggleButtons();
 
-supabaseClient.auth.onAuthStateChange((_event, session) => {
-  if (session?.user) { showApp(session.user); } else { showAuth(); }
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    if (event.data?.type === "OPEN_ROOM" && event.data.roomId) openRoomByUserId(event.data.roomId);
+  });
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  const room = activeRoomKey ? rooms.get(activeRoomKey) : null;
+  notifyServiceWorkerActiveRoom(room ? room.userId : null);
 });
 
-supabaseClient.auth.getSession().then(({ data: { session } }) => {
-  if (session?.user) { showApp(session.user); } else { showAuth(); }
-});
+async function boot() {
+  await consumePendingEmailConfirmation();
+  migrateLegacySessionIfNeeded();
+  const registry = loadRoomRegistry();
+  if (registry.length === 0) {
+    startAddRoomFlow({ isFirstRoom: true });
+    return;
+  }
+  showScreen("rooms");
+  await Promise.all(registry.filter((entry) => !rooms.has(entry.storageKey)).map(initRoomFromRegistryEntry));
+  renderRoomList();
+  maybeOpenRoomFromUrl();
+}
+
+boot();
