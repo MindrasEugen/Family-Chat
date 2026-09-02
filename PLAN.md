@@ -14,6 +14,7 @@ Note di lavoro non legate a un task specifico: filosofia di sviluppo, debito tec
 ## Debito tecnico noto
 
 - **Nessun test automatico** (vedi Filosofia sopra).
+- **Aggiornamento di `supabase-js` in due passi**: in `index.html` la libreria è caricata da CDN con versione fissata e hash `integrity` (SRI, vedi `SECURITY_REPORT.md` punto 1). Aggiornare solo il numero di versione senza rigenerare l'hash rompe il caricamento (il browser blocca lo script per mismatch di integrity). Ad ogni bump di versione: scaricare il nuovo file, ricalcolare l'hash SHA-384, e aggiornare entrambi insieme nel tag `<script>`.
 - `app.js` è un unico file (~950 righe) che gestisce auth multi-camera, realtime, push, traduzione e rendering UI. Sostenibile per ora, ma da modularizzare se il progetto cresce ulteriormente.
 - Nessun build step / type-checking: gli errori di battitura o di forma dei dati si scoprono solo a runtime.
 - La funzione multi-camera (aggiunta 2026-09-02) non è ancora stata verificata su device reali con due account veri.
