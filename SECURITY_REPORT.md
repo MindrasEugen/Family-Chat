@@ -89,7 +89,7 @@ Per design (vedi README), tutti i membri di una "camera" usano le stesse credenz
 
 Queste impostazioni vivono nella dashboard Supabase, non nel repository — vanno controllate/confermate a parte:
 
-- Conferma email obbligatoria alla registrazione (evita account "usa e getta" sulla camera).
+- **Conferma email: verificato NON attiva (2026-09-02)**, creando l'account di test per la suite E2E (vedi `PLAN.md`) — la richiesta di signup ha restituito subito una sessione valida, senza attesa di conferma. Permette quindi oggi account "usa e getta" sulla camera con una semplice email/password, senza bisogno di accesso reale a quella casella. Da valutare se attivarla in **Authentication → Providers → Email** della dashboard Supabase, coerentemente col modello di fiducia familiare attuale (vedi punto 5).
 - Rate limiting / protezione da password compromesse su Supabase Auth.
 - Dimensione massima file impostata sul bucket `chat-photos`.
 - Che il Database Webhook verso `send-push` non sia raggiungibile senza l'header `x-webhook-secret` corretto (già previsto per design, da riconfermare in dashboard).

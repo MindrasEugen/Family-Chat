@@ -5,3 +5,7 @@ PROMPT_ORIGINALE.md
 Thumbs.db
 node_modules/
 .vitest-localstorage.sqlite*
+e2e/test-account.local.mjs
+playwright-report/
+test-results/
+blob-report/
