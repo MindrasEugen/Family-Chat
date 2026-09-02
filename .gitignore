@@ -3,3 +3,5 @@ System.Drawing.Drawing2D.GraphicsPath
 PROMPT_ORIGINALE.md
 .DS_Store
 Thumbs.db
+node_modules/
+.vitest-localstorage.sqlite*

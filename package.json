@@ -1,0 +1,13 @@
+{
+  "name": "family-chat",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "cross-env NODE_OPTIONS=--localstorage-file=./.vitest-localstorage.sqlite vitest run"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "jsdom": "^25.0.1",
+    "vitest": "^2.1.9"
+  }
+}

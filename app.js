@@ -8,7 +8,6 @@ const SIGNED_URL_TTL_SECONDS = 60 * 60 * 24 * 7;
 const RETENTION_DAYS = 30;
 const TRANSLATE_FUNCTION = "translate-message";
 const VAPID_PUBLIC_KEY = "BJhBpx9peKaS2Ze3xFzAgQUb5hzRPI35LhCKi9eqNigP_xRDyM1haDB6RRhpRbIr48o-rX1XzPM10ay78LbjJrE";
-const ROOM_REGISTRY_KEY = "chatFamiglia.rooms";
 const PENDING_ROOM_KEY = "pendingRoomStorageKey";
 
 if ("serviceWorker" in navigator) {
@@ -69,12 +68,6 @@ function setMessage(el, text, type) {
   el.textContent = text || "";
   el.classList.remove("error", "success");
   if (type) el.classList.add(type);
-}
-
-function escapeHtml(str) {
-  const div = document.createElement("div");
-  div.textContent = str;
-  return div.innerHTML;
 }
 
 function updateEmptyState() {
@@ -356,13 +349,6 @@ async function cleanupOldMessages(room) {
   await room.client.from("messages").delete().lt("created_at", cutoffIso);
 }
 
-function urlBase64ToUint8Array(base64String) {
-  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
-  const rawData = atob(base64);
-  return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
-}
-
 // Sottoscrive questo dispositivo alle notifiche push del sistema operativo per
 // questa camera: a differenza della vibrazione via canale realtime, queste
 // arrivano anche ad app chiusa o schermo spento. Il browser ha un solo
@@ -475,42 +461,10 @@ function createSupabaseClientForRoom(storageKey, opts = {}) {
   });
 }
 
-function loadRoomRegistry() {
-  try {
-    return JSON.parse(localStorage.getItem(ROOM_REGISTRY_KEY)) || [];
-  } catch {
-    return [];
-  }
-}
-
-function saveRoomRegistry(entries) {
-  try {
-    localStorage.setItem(ROOM_REGISTRY_KEY, JSON.stringify(entries));
-  } catch {}
-}
-
-function upsertRegistryEntry(entry) {
-  const list = loadRoomRegistry().filter((e) => e.storageKey !== entry.storageKey);
-  list.push(entry);
-  saveRoomRegistry(list);
-}
-
-function removeRegistryEntry(storageKey) {
-  saveRoomRegistry(loadRoomRegistry().filter((e) => e.storageKey !== storageKey));
-}
-
 // Prima di questa funzione l'app aveva un solo account per device, con la
 // sessione nella storageKey di default di supabase-js. Al primo avvio dopo
 // l'aggiornamento la spostiamo su una storageKey "sb-room-*" dedicata e la
 // registriamo come prima camera, senza forzare un logout.
-function findLegacyStorageKey() {
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (key && /^sb-.*-auth-token$/.test(key) && !key.startsWith("sb-room-")) return key;
-  }
-  return null;
-}
-
 function migrateLegacySessionIfNeeded() {
   if (loadRoomRegistry().length > 0) return;
   const legacyKey = findLegacyStorageKey();
@@ -740,17 +694,6 @@ function maybeOpenRoomFromUrl() {
   if (!roomParam) return;
   openRoomByUserId(roomParam);
   history.replaceState(null, "", location.pathname);
-}
-
-function roomInitial(label) {
-  return (label || "?").trim().charAt(0).toUpperCase() || "?";
-}
-
-function formatPreviewText(message) {
-  if (!message) return "Nessun messaggio";
-  if (message.content) return message.content;
-  if (message.image_path) return "📷 Foto";
-  return "";
 }
 
 function renderRoomList() {
