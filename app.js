@@ -401,7 +401,19 @@ async function unsubscribeSharedPushEndpoint() {
   } catch {}
 }
 
+// Il canale realtime può cadere senza preavviso (schermo del telefono
+// bloccato, app in background, rete che va e viene) e supabase-js non
+// riconsegna gli eventi persi alla riconnessione: prima di questa fix
+// l'unico modo per rivedere i messaggi arrivati nel frattempo era
+// ricaricare l'intera app. Ora ogni SUBSCRIBED (sia il primo che quelli
+// dopo una riconnessione) fa anche un fetch di recupero dei messaggi più
+// recenti dell'ultimo visto, e un CHANNEL_ERROR/TIMED_OUT/CLOSED
+// pianifica una nuova sottoscrizione invece di restare morto in silenzio.
 function subscribeRealtimeForRoom(room) {
+  if (room.reconnectTimer) {
+    clearTimeout(room.reconnectTimer);
+    room.reconnectTimer = null;
+  }
   if (room.channel) room.client.removeChannel(room.channel);
   room.channel = room.client
     .channel(`messages-changes-${room.userId}`)
@@ -411,10 +423,44 @@ function subscribeRealtimeForRoom(room) {
     .on("postgres_changes", { event: "DELETE", schema: "public", table: "messages", filter: `user_id=eq.${room.userId}` }, (payload) => {
       onRoomMessageDelete(room, payload.old.id);
     })
-    .subscribe();
+    .subscribe((status) => {
+      if (status === "SUBSCRIBED") {
+        catchUpMessages(room);
+      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+        scheduleRealtimeResubscribe(room);
+      }
+    });
+}
+
+function scheduleRealtimeResubscribe(room) {
+  if (room.reconnectTimer || !rooms.has(room.storageKey)) return;
+  room.reconnectTimer = setTimeout(() => {
+    room.reconnectTimer = null;
+    if (rooms.get(room.storageKey) === room && room.userId) subscribeRealtimeForRoom(room);
+  }, 3000);
+}
+
+// Recupera i messaggi (insert e, indirettamente, gli aggiornamenti di lista)
+// arrivati mentre il canale realtime era giù. Sicuro da richiamare anche
+// quando non è successo nulla: la query non trova righe più recenti
+// dell'ultimo messaggio noto e non fa nulla.
+async function catchUpMessages(room) {
+  if (!room.userId) return;
+  const sinceIso = room.lastMessage?.created_at || "1970-01-01T00:00:00.000Z";
+  const { data, error } = await room.client
+    .from("messages")
+    .select("*")
+    .gt("created_at", sinceIso)
+    .order("created_at", { ascending: true });
+  if (error || !data) return;
+  data.forEach((message) => onRoomMessageInsert(room, message));
 }
 
 function unsubscribeRealtimeForRoom(room) {
+  if (room.reconnectTimer) {
+    clearTimeout(room.reconnectTimer);
+    room.reconnectTimer = null;
+  }
   if (room.channel) {
     room.client.removeChannel(room.channel);
     room.channel = null;
@@ -547,6 +593,7 @@ async function initRoomFromRegistryEntry(entry) {
     label: entry.label,
     client,
     channel: null,
+    reconnectTimer: null,
     chatStarted: false,
     needsLogin: false,
     pendingConfirmation: !!entry.pendingConfirmation,
@@ -578,6 +625,7 @@ async function consumePendingEmailConfirmation() {
     label: null,
     client,
     channel: null,
+    reconnectTimer: null,
     chatStarted: false,
     needsLogin: true,
     pendingConfirmation: false,
@@ -602,6 +650,7 @@ function startAddRoomFlow({ isFirstRoom }) {
     label: null,
     client,
     channel: null,
+    reconnectTimer: null,
     chatStarted: false,
     needsLogin: true,
     pendingConfirmation: false,
@@ -913,7 +962,21 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible") return;
   const room = activeRoomKey ? rooms.get(activeRoomKey) : null;
   notifyServiceWorkerActiveRoom(room ? room.userId : null);
+  resyncAllRooms();
 });
+
+window.addEventListener("online", resyncAllRooms);
+
+// Ri-sottoscrive il canale realtime di ogni camera avviata (che recupera
+// anche i messaggi persi, vedi subscribeRealtimeForRoom/catchUpMessages).
+// Richiamata quando si torna sulla tab/app o quando torna la rete: sono i
+// due momenti in cui una connessione WebSocket morta in silenzio va
+// rimpiazzata, senza dover ricaricare tutta la pagina.
+function resyncAllRooms() {
+  for (const room of rooms.values()) {
+    if (room.userId && room.chatStarted) subscribeRealtimeForRoom(room);
+  }
+}
 
 async function boot() {
   await consumePendingEmailConfirmation();
