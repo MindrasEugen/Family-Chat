@@ -88,67 +88,114 @@ function scrollToBottom() {
   messageList.scrollTop = messageList.scrollHeight;
 }
 
-// createImageBitmap() non decodifica in modo affidabile alcuni formati su
-// certe combinazioni browser/dispositivo (es. HEIC delle foto iPhone su
-// alcune versioni di Safari/Android), pur essendo lo stesso file che il tag
-// <img> dell'anteprima mostra correttamente. Se fallisce, riproviamo con la
-// pipeline di decodifica di <img>, che copre praticamente tutto ciò che
-// l'anteprima è già riuscita a mostrare all'utente.
-//
-// Il cleanup dell'object URL è responsabilità del chiamante (non lo
-// revochiamo qui in onload): su alcune combinazioni browser/formato la
-// decodifica completa dei pixel avviene "lazy", al momento del disegno su
-// canvas, non al load dell'<img> — revocare subito l'URL può far fallire
-// silenziosamente proprio quel disegno, vanificando il fallback.
-async function decodeImageForCanvas(file) {
-  try {
-    return { source: await createImageBitmap(file), cleanup: () => {} };
-  } catch {
-    return new Promise((resolve) => {
-      const url = URL.createObjectURL(file);
-      const cleanup = () => URL.revokeObjectURL(url);
-      const img = new Image();
-      img.onload = () => resolve({ source: img, cleanup });
-      img.onerror = () => {
-        cleanup();
-        resolve(null);
-      };
-      img.src = url;
+// heic2any (https://github.com/alexcorvi/heic2any) decodifica HEIC/HEIF via
+// WASM, indipendente dal motore di rendering del browser. Caricata solo al
+// primo utilizzo reale (non ad ogni avvio dell'app): è una libreria pesante
+// (~1.3MB) utile solo nel caso limite in cui le altre strategie falliscono,
+// quindi non ha senso pagarne il costo per tutti gli utenti che non ne hanno
+// mai bisogno. Hash di integrità preso dal build effettivamente pubblicato
+// su jsdelivr per questa versione.
+const HEIC2ANY_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
+const HEIC2ANY_INTEGRITY = "sha384-OTofQ0MEeiSgh62havBcemCIK0gqj809wX6UA0uPISNMRnR6NZyCdGzX3SbLrgwL";
+let heic2anyLoadPromise = null;
+
+function loadHeic2any() {
+  if (window.heic2any) return Promise.resolve(window.heic2any);
+  if (!heic2anyLoadPromise) {
+    heic2anyLoadPromise = new Promise((resolve) => {
+      const script = document.createElement("script");
+      script.src = HEIC2ANY_URL;
+      script.integrity = HEIC2ANY_INTEGRITY;
+      script.crossOrigin = "anonymous";
+      script.onload = () => resolve(window.heic2any || null);
+      script.onerror = () => resolve(null);
+      document.head.appendChild(script);
     });
+  }
+  return heic2anyLoadPromise;
+}
+
+// Ridimensiona e disegna una sorgente già decodificata (ImageBitmap o
+// HTMLImageElement) su un canvas, poi la ricodifica in JPEG. Isolata dalle
+// strategie di decodifica sotto: qui può fallire anche se la decodifica a
+// monte è andata a buon fine (visto su device dove il canvas rifiuta di
+// disegnare un'immagine HEIC pur avendola caricata correttamente in <img>).
+async function drawToJpegBlob(source, maxDimension, quality) {
+  let width = source.naturalWidth ?? source.width;
+  let height = source.naturalHeight ?? source.height;
+  if (width > maxDimension || height > maxDimension) {
+    const scale = maxDimension / Math.max(width, height);
+    width = Math.round(width * scale);
+    height = Math.round(height * scale);
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d").drawImage(source, 0, 0, width, height);
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("toBlob returned null"))), "image/jpeg", quality);
+  });
+}
+
+async function compressViaImageBitmap(file, maxDimension, quality) {
+  return drawToJpegBlob(await createImageBitmap(file), maxDimension, quality);
+}
+
+// Alcune combinazioni browser/dispositivo (es. HEIC delle foto iPhone su
+// certe versioni di Safari/Android) non sanno decodificare il file con
+// createImageBitmap, pur essendo lo stesso file che il tag <img>
+// dell'anteprima mostra correttamente: questa strategia riusa lo stesso
+// percorso di decodifica dell'anteprima.
+//
+// Il cleanup dell'object URL avviene solo DOPO averlo usato nel canvas (nel
+// finally, non nell'onload): su alcune combinazioni browser/formato la
+// decodifica completa dei pixel avviene "lazy", al momento del disegno, non
+// al load dell'<img> — revocare l'URL troppo presto può far fallire
+// silenziosamente proprio quel disegno.
+async function compressViaImgElement(file, maxDimension, quality) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("img decode failed"));
+      el.src = url;
+    });
+    return await drawToJpegBlob(img, maxDimension, quality);
+  } finally {
+    URL.revokeObjectURL(url);
   }
 }
 
-// Ridimensiona e ricomprime la foto lato client prima dell'upload:
-// le foto scattate da un cellulare possono pesare diversi MB, inaccettabile su rete mobile.
-// Ritorna null se il file non è decodificabile in alcun modo (compreso un
-// fallimento di drawImage/toBlob, non solo del decode iniziale): il
-// chiamante deve trattarlo come un errore esplicito, non tentare comunque
-// l'upload dell'originale (altri device potrebbero non riuscire a
-// visualizzarlo).
+// Ultima spiaggia: se anche <img> non basta (il device rifiuta proprio di
+// disegnare quel formato su un canvas, non solo di caricarlo), decodifica
+// esplicitamente via heic2any e riparte da un JPEG intermedio, che qualsiasi
+// canvas sa disegnare senza problemi.
+async function compressViaHeic2any(file, maxDimension, quality) {
+  const heic2any = await loadHeic2any();
+  if (!heic2any) throw new Error("heic2any non disponibile");
+  const converted = await heic2any({ blob: file, toType: "image/jpeg", quality: 0.9 });
+  const jpegBlob = Array.isArray(converted) ? converted[0] : converted;
+  return drawToJpegBlob(await createImageBitmap(jpegBlob), maxDimension, quality);
+}
+
+// Ridimensiona e ricomprime la foto lato client prima dell'upload: le foto
+// scattate da un cellulare possono pesare diversi MB, inaccettabile su rete
+// mobile. Prova le strategie in ordine di costo crescente, passando alla
+// successiva se una fallisce in QUALSIASI fase (decodifica o disegno).
+// Ritorna null se nessuna strategia funziona: il chiamante deve trattarlo
+// come un errore esplicito, non tentare comunque l'upload dell'originale
+// (altri device potrebbero non riuscire a visualizzarlo).
 async function compressImage(file, maxDimension = 1600, quality = 0.8) {
-  const decoded = await decodeImageForCanvas(file);
-  if (!decoded) return null;
-  const { source, cleanup } = decoded;
-  try {
-    let width = source.naturalWidth ?? source.width;
-    let height = source.naturalHeight ?? source.height;
-    if (width > maxDimension || height > maxDimension) {
-      const scale = maxDimension / Math.max(width, height);
-      width = Math.round(width * scale);
-      height = Math.round(height * scale);
+  const strategies = [compressViaImageBitmap, compressViaImgElement, compressViaHeic2any];
+  for (const strategy of strategies) {
+    try {
+      return await strategy(file, maxDimension, quality);
+    } catch {
+      // Prova la strategia successiva.
     }
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    canvas.getContext("2d").drawImage(source, 0, 0, width, height);
-    return await new Promise((resolve, reject) => {
-      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("toBlob returned null"))), "image/jpeg", quality);
-    });
-  } catch {
-    return null;
-  } finally {
-    cleanup();
   }
+  return null;
 }
 
 function getDeviceLang() {
