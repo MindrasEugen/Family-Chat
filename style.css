@@ -653,3 +653,90 @@ button.secondary:active {
   align-items: center;
   justify-content: center;
 }
+
+/* ---------------------------------------------------------
+   Sezione Traduttore
+--------------------------------------------------------- */
+
+.translator-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  width: 100%;
+  max-width: 480px;
+  margin: 0 auto;
+  background: var(--card-bg);
+}
+
+.translator-app .app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  padding: 12px 16px;
+  padding-top: max(12px, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--border);
+  background: var(--card-bg);
+}
+
+.translator-app .app-header h1 {
+  margin: 0;
+  text-align: left;
+  font-size: 1.15rem;
+}
+
+.translator-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  background: var(--card-bg);
+}
+
+.translator-langs {
+  display: flex;
+  gap: 10px;
+}
+
+.translator-langs button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.translator-langs button svg {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.translator-output-label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.translator-output {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-height: 64px;
+  font-size: 1rem;
+  background: var(--bg);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.translator-output:empty::before {
+  content: "La traduzione comparirà qui…";
+  color: var(--muted);
+  font-size: 0.9rem;
+}

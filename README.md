@@ -10,6 +10,7 @@ PWA di chat che supporta più account condivisi ("camere") loggati contemporanea
 - **Login condiviso per camera** (email/password) via Supabase Auth: stesso account su tutti i dispositivi che partecipano a quella camera.
 - **Messaggi in tempo reale** tra dispositivi tramite Supabase Realtime, con testo e/o **una foto per messaggio** (ridimensionata e compressa lato client prima dell'upload).
 - **Traduzione automatica** di ogni messaggio nella lingua di sistema del dispositivo che lo riceve, tramite una Edge Function che fa da proxy verso l'API di Mistral.
+- **Traduttore**: strumento standalone per tradurre testo libero verso francese o inglese, utile per preparare messaggi nella lingua giusta; riusa la stessa Edge Function della chat.
 - **Nome del dispositivo**: richiesto al primo avvio (salvato solo in locale, condiviso da tutte le camere su quel device) e mostrato sui messaggi inviati da lì, per riconoscere chi scrive.
 - **Notifiche push** di sistema (Web Push/VAPID) per ciascuna camera, consegnate anche ad app chiusa o schermo spento, soppresse automaticamente solo se quella specifica camera è già aperta in primo piano (lì il messaggio arriva comunque via realtime).
 - **Pulizia automatica**: i messaggi (e le foto collegate) più vecchi di 30 giorni vengono eliminati, per ogni camera, ad ogni apertura dell'app.
@@ -28,6 +29,9 @@ PWA di chat che supporta più account condivisi ("camere") loggati contemporanea
 | `DB.sql` | Schema Supabase: tabelle `messages`/`push_subscriptions`, RLS, bucket Storage per le foto |
 | `icons/` | Icone dell'app |
 | `lib/pure.js` | Funzioni pure estratte da `app.js`, testate con Vitest (vedi sotto) |
+| `lib/translator.js` | Modulo di traduzione (client per la Edge Function `translate-message`), testato con Vitest |
+| `translator.js` | UI della sezione Traduttore (debounce, cambio lingua, navigazione) |
+| `lib/translator.test.js` | Test Vitest per `lib/translator.js` (7 test) |
 | `e2e/` | Test end-to-end (Playwright) sui flussi critici |
 
 ## Setup Supabase
@@ -66,7 +70,7 @@ Le chiamate a Supabase funzionano anche in locale (sono richieste HTTPS dirette)
 
 Richiede `npm install` (installa solo dipendenze di sviluppo: l'app in produzione resta senza build step).
 
-- **Unit test** (`npm test`, Vitest): coprono le funzioni pure estratte in `lib/pure.js` (escape HTML, formattazione, registro camere in `localStorage`). Non toccano Supabase.
+- **Unit test** (`npm test`, Vitest): coprono le funzioni pure estratte in `lib/pure.js` (escape HTML, formattazione, registro camere in `localStorage`) e il modulo `lib/translator.js` (fetch verso la Edge Function mockato). Non toccano Supabase.
 - **Test E2E** (`npm run test:e2e`, Playwright): coprono login, invio messaggio e persistenza della sessione dopo reload, contro il vero backend Supabase del progetto (nessun mock).
   - Serve un account Supabase dedicato ai test, isolato dai dati reali tramite le stesse RLS policy di produzione (ogni account vede solo le proprie righe — non servono tabelle o progetti separati). Copia `e2e/test-account.example.mjs` in `e2e/test-account.local.mjs` (gitignored) con le credenziali di quell'account — vedi i commenti nel file per come crearlo.
   - I test puliscono da soli i messaggi che creano, usando il pulsante di eliminazione dell'app stessa.

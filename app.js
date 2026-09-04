@@ -453,6 +453,9 @@ function showScreen(name) {
   authSection.classList.toggle("hidden", name !== "auth");
   roomListSection.classList.toggle("hidden", name !== "rooms");
   appSection.classList.toggle("hidden", name !== "chat");
+  // Voce di navigazione verso la sezione Traduttore (translator.js):
+  // lookup lazy perché translator.js è caricato dopo app.js.
+  document.getElementById("translator-section")?.classList.toggle("hidden", name !== "translator");
 }
 
 function createSupabaseClientForRoom(storageKey, opts = {}) {
