@@ -208,9 +208,10 @@ async function compressViaHeic2any(file, maxDimension, quality) {
 // scattate da un cellulare possono pesare diversi MB, inaccettabile su rete
 // mobile. Prova le strategie in ordine di costo crescente, passando alla
 // successiva se una fallisce in QUALSIASI fase (decodifica o disegno).
-// Ritorna null se nessuna strategia funziona: il chiamante deve trattarlo
-// come un errore esplicito, non tentare comunque l'upload dell'originale
-// (altri device potrebbero non riuscire a visualizzarlo).
+// Ritorna null se nessuna strategia funziona (visto su device reali dove
+// nemmeno heic2any riesce a decodificare l'HEIC): il chiamante è
+// responsabile di decidere il da farsi, qui ci limitiamo a rinunciare alla
+// compressione.
 async function compressImage(file, maxDimension = 1600, quality = 0.8) {
   const strategies = [compressViaImageBitmap, compressViaImgElement, compressViaHeic2any];
   for (const strategy of strategies) {
@@ -221,6 +222,17 @@ async function compressImage(file, maxDimension = 1600, quality = 0.8) {
     }
   }
   return null;
+}
+
+// Estensione da usare per il file caricato quando la compressione fallisce
+// e si carica l'originale così com'è: preferisce quella del nome file
+// originale (di solito affidabile per foto da galleria/fotocamera), poi
+// ricava dal MIME type, poi un fallback generico.
+function fileExtension(file) {
+  const fromName = /\.([a-z0-9]+)$/i.exec(file.name || "");
+  if (fromName) return fromName[1].toLowerCase();
+  const fromType = /^image\/([a-z0-9.+-]+)$/i.exec(file.type || "");
+  return fromType ? fromType[1].toLowerCase() : "jpg";
 }
 
 function getDeviceLang() {
@@ -1004,20 +1016,26 @@ chatForm.addEventListener("submit", async (e) => {
     let imagePath = null;
     if (selectedPhotoFile) {
       const compressed = await compressImage(selectedPhotoFile);
-      if (!compressed) throw new Error("PHOTO_DECODE_FAILED");
-      imagePath = `${room.userId}/${crypto.randomUUID()}.jpg`;
-      const { error: uploadError } = await room.client.storage
-        .from(PHOTO_BUCKET)
-        .upload(imagePath, compressed, { contentType: "image/jpeg" });
+      // Se nessuna strategia di compressione riesce (device che non sa
+      // decodificare il formato in alcun modo, es. HEIC su alcuni
+      // Android), carichiamo il file originale così com'è invece di
+      // bloccare l'invio: il messaggio arriva sempre. Chi legge da un
+      // browser che supporta nativamente quel formato (es. Safari/iOS con
+      // HEIC) vedrà comunque la foto; altrove potrebbe non essere
+      // visualizzabile in anteprima, ma non va perso il messaggio.
+      const toUpload = compressed || selectedPhotoFile;
+      const ext = compressed ? "jpg" : fileExtension(selectedPhotoFile);
+      const contentType = compressed ? "image/jpeg" : selectedPhotoFile.type || "application/octet-stream";
+      imagePath = `${room.userId}/${crypto.randomUUID()}.${ext}`;
+      const { error: uploadError } = await room.client.storage.from(PHOTO_BUCKET).upload(imagePath, toUpload, { contentType });
       if (uploadError) throw uploadError;
     }
     const { error } = await room.client.from("messages").insert({ content: text || null, image_path: imagePath, device_name: getDeviceName() });
     if (error) throw error;
     messageInput.value = "";
     clearPhotoSelection();
-  } catch (err) {
-    const errorText = err?.message === "PHOTO_DECODE_FAILED" ? "Impossibile elaborare questa foto. Prova con un'altra immagine." : "Errore nell'invio del messaggio.";
-    setMessage(chatMessage, errorText, "error");
+  } catch {
+    setMessage(chatMessage, "Errore nell'invio del messaggio.", "error");
   } finally {
     showLoading(false);
   }
