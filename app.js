@@ -167,6 +167,31 @@ async function compressViaImgElement(file, maxDimension, quality) {
   }
 }
 
+// La decodifica WASM di heic2any è tutta su CPU (nessuna accelerazione
+// hardware) e su una foto a piena risoluzione (12+ megapixel, tipica di uno
+// smartphone recente) può richiedere molto tempo su un device di fascia
+// bassa — o restare bloccata del tutto. Senza un limite di tempo esplicito,
+// un blocco qui lascia lo spinner di caricamento dell'app fermo per sempre,
+// visto su un device reale. HEIC2ANY_TIMEOUT_MS fa sì che l'app rinunci e
+// mostri l'errore invece di restare bloccata a tempo indeterminato.
+const HEIC2ANY_TIMEOUT_MS = 20000;
+
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout")), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
 // Ultima spiaggia: se anche <img> non basta (il device rifiuta proprio di
 // disegnare quel formato su un canvas, non solo di caricarlo), decodifica
 // esplicitamente via heic2any e riparte da un JPEG intermedio, che qualsiasi
@@ -174,7 +199,7 @@ async function compressViaImgElement(file, maxDimension, quality) {
 async function compressViaHeic2any(file, maxDimension, quality) {
   const heic2any = await loadHeic2any();
   if (!heic2any) throw new Error("heic2any non disponibile");
-  const converted = await heic2any({ blob: file, toType: "image/jpeg", quality: 0.9 });
+  const converted = await withTimeout(heic2any({ blob: file, toType: "image/jpeg", quality: 0.9 }), HEIC2ANY_TIMEOUT_MS);
   const jpegBlob = Array.isArray(converted) ? converted[0] : converted;
   return drawToJpegBlob(await createImageBitmap(jpegBlob), maxDimension, quality);
 }
@@ -191,8 +216,8 @@ async function compressImage(file, maxDimension = 1600, quality = 0.8) {
   for (const strategy of strategies) {
     try {
       return await strategy(file, maxDimension, quality);
-    } catch {
-      // Prova la strategia successiva.
+    } catch (err) {
+      console.warn(`compressImage: strategia ${strategy.name} fallita`, err);
     }
   }
   return null;
