@@ -170,11 +170,14 @@ async function compressViaImgElement(file, maxDimension, quality) {
 // La decodifica WASM di heic2any è tutta su CPU (nessuna accelerazione
 // hardware) e su una foto a piena risoluzione (12+ megapixel, tipica di uno
 // smartphone recente) può richiedere molto tempo su un device di fascia
-// bassa — o restare bloccata del tutto. Senza un limite di tempo esplicito,
-// un blocco qui lascia lo spinner di caricamento dell'app fermo per sempre,
-// visto su un device reale. HEIC2ANY_TIMEOUT_MS fa sì che l'app rinunci e
-// mostri l'errore invece di restare bloccata a tempo indeterminato.
-const HEIC2ANY_TIMEOUT_MS = 20000;
+// bassa — o restare bloccata del tutto, come visto su un device reale dove
+// l'attesa non è mai finita. Senza un limite di tempo esplicito, un blocco
+// qui lascia lo spinner di caricamento dell'app fermo per sempre.
+// Tenuto basso apposta: se questa strategia non ce la fa in fretta, tanto
+// vale rinunciare subito e lasciare che il chiamante carichi l'originale
+// (vedi il fallback in chatForm submit) invece di far aspettare a lungo per
+// un tentativo che, su device come quello, non converge comunque.
+const HEIC2ANY_TIMEOUT_MS = 6000;
 
 function withTimeout(promise, ms) {
   return new Promise((resolve, reject) => {
