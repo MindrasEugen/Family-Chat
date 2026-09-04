@@ -94,19 +94,23 @@ function scrollToBottom() {
 // <img> dell'anteprima mostra correttamente. Se fallisce, riproviamo con la
 // pipeline di decodifica di <img>, che copre praticamente tutto ciò che
 // l'anteprima è già riuscita a mostrare all'utente.
+//
+// Il cleanup dell'object URL è responsabilità del chiamante (non lo
+// revochiamo qui in onload): su alcune combinazioni browser/formato la
+// decodifica completa dei pixel avviene "lazy", al momento del disegno su
+// canvas, non al load dell'<img> — revocare subito l'URL può far fallire
+// silenziosamente proprio quel disegno, vanificando il fallback.
 async function decodeImageForCanvas(file) {
   try {
-    return await createImageBitmap(file);
+    return { source: await createImageBitmap(file), cleanup: () => {} };
   } catch {
     return new Promise((resolve) => {
       const url = URL.createObjectURL(file);
+      const cleanup = () => URL.revokeObjectURL(url);
       const img = new Image();
-      img.onload = () => {
-        URL.revokeObjectURL(url);
-        resolve(img);
-      };
+      img.onload = () => resolve({ source: img, cleanup });
       img.onerror = () => {
-        URL.revokeObjectURL(url);
+        cleanup();
         resolve(null);
       };
       img.src = url;
@@ -116,24 +120,35 @@ async function decodeImageForCanvas(file) {
 
 // Ridimensiona e ricomprime la foto lato client prima dell'upload:
 // le foto scattate da un cellulare possono pesare diversi MB, inaccettabile su rete mobile.
-// Ritorna null se il file non è decodificabile in alcun modo: il chiamante
-// deve trattarlo come un errore esplicito, non tentare comunque l'upload
-// dell'originale (altri device potrebbero non riuscire a visualizzarlo).
+// Ritorna null se il file non è decodificabile in alcun modo (compreso un
+// fallimento di drawImage/toBlob, non solo del decode iniziale): il
+// chiamante deve trattarlo come un errore esplicito, non tentare comunque
+// l'upload dell'originale (altri device potrebbero non riuscire a
+// visualizzarlo).
 async function compressImage(file, maxDimension = 1600, quality = 0.8) {
-  const source = await decodeImageForCanvas(file);
-  if (!source) return null;
-  let width = source.naturalWidth ?? source.width;
-  let height = source.naturalHeight ?? source.height;
-  if (width > maxDimension || height > maxDimension) {
-    const scale = maxDimension / Math.max(width, height);
-    width = Math.round(width * scale);
-    height = Math.round(height * scale);
+  const decoded = await decodeImageForCanvas(file);
+  if (!decoded) return null;
+  const { source, cleanup } = decoded;
+  try {
+    let width = source.naturalWidth ?? source.width;
+    let height = source.naturalHeight ?? source.height;
+    if (width > maxDimension || height > maxDimension) {
+      const scale = maxDimension / Math.max(width, height);
+      width = Math.round(width * scale);
+      height = Math.round(height * scale);
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext("2d").drawImage(source, 0, 0, width, height);
+    return await new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("toBlob returned null"))), "image/jpeg", quality);
+    });
+  } catch {
+    return null;
+  } finally {
+    cleanup();
   }
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  canvas.getContext("2d").drawImage(source, 0, 0, width, height);
-  return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
 }
 
 function getDeviceLang() {
