@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { translateText } from "./translator.js";
+import { translateText } from "../../lib/translator.js";
 
 beforeEach(() => {
   globalThis.SUPABASE_URL = "https://test-project.supabase.co";

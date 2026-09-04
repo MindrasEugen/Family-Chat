@@ -5,7 +5,8 @@ import { readFile, stat } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = fileURLToPath(new URL("..", import.meta.url));
+// Radice del repo (app.js, index.html, ...): due livelli sopra tests/e2e/.
+const root = fileURLToPath(new URL("../..", import.meta.url));
 const port = Number(process.env.PORT || 24173);
 
 const MIME = {

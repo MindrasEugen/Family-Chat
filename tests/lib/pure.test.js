@@ -9,7 +9,7 @@ import {
   upsertRegistryEntry,
   removeRegistryEntry,
   findLegacyStorageKey,
-} from "./pure.js";
+} from "../../lib/pure.js";
 
 beforeEach(() => {
   localStorage.clear();

@@ -31,8 +31,9 @@ PWA di chat che supporta più account condivisi ("camere") loggati contemporanea
 | `lib/pure.js` | Funzioni pure estratte da `app.js`, testate con Vitest (vedi sotto) |
 | `lib/translator.js` | Modulo di traduzione (client per la Edge Function `translate-message`), testato con Vitest |
 | `translator.js` | UI della sezione Traduttore (debounce, cambio lingua, navigazione) |
-| `lib/translator.test.js` | Test Vitest per `lib/translator.js` (7 test) |
-| `e2e/` | Test end-to-end (Playwright) sui flussi critici |
+| `tests/` | Tooling di test (Vitest, Playwright) e test stessi — separato dalla radice apposta perché' Render, per i siti statici, rileva `package.json` alla radice ed esegue sempre `npm install` prima del deploy; tenerlo altrove riporta i deploy a pochi secondi (vedi PLAN.md) |
+| `tests/lib/translator.test.js` | Test Vitest per `lib/translator.js` (7 test) |
+| `tests/e2e/` | Test end-to-end (Playwright) sui flussi critici |
 
 ## Setup Supabase
 
@@ -68,10 +69,10 @@ Le chiamate a Supabase funzionano anche in locale (sono richieste HTTPS dirette)
 
 ## Test
 
-Richiede `npm install` (installa solo dipendenze di sviluppo: l'app in produzione resta senza build step).
+Tooling e test vivono in `tests/` (non alla radice del progetto: vedi la nota nella tabella sopra). Richiede `npm --prefix tests install` (installa solo dipendenze di sviluppo: l'app in produzione resta senza build step).
 
-- **Unit test** (`npm test`, Vitest): coprono le funzioni pure estratte in `lib/pure.js` (escape HTML, formattazione, registro camere in `localStorage`) e il modulo `lib/translator.js` (fetch verso la Edge Function mockato). Non toccano Supabase.
-- **Test E2E** (`npm run test:e2e`, Playwright): coprono login, invio messaggio e persistenza della sessione dopo reload, contro il vero backend Supabase del progetto (nessun mock).
-  - Serve un account Supabase dedicato ai test, isolato dai dati reali tramite le stesse RLS policy di produzione (ogni account vede solo le proprie righe — non servono tabelle o progetti separati). Copia `e2e/test-account.example.mjs` in `e2e/test-account.local.mjs` (gitignored) con le credenziali di quell'account — vedi i commenti nel file per come crearlo.
+- **Unit test** (`npm --prefix tests test`, Vitest): coprono le funzioni pure estratte in `lib/pure.js` (escape HTML, formattazione, registro camere in `localStorage`) e il modulo `lib/translator.js` (fetch verso la Edge Function mockato). Non toccano Supabase.
+- **Test E2E** (`npm --prefix tests run test:e2e`, Playwright): coprono login, invio messaggio e persistenza della sessione dopo reload, contro il vero backend Supabase del progetto (nessun mock).
+  - Serve un account Supabase dedicato ai test, isolato dai dati reali tramite le stesse RLS policy di produzione (ogni account vede solo le proprie righe — non servono tabelle o progetti separati). Copia `tests/e2e/test-account.example.mjs` in `tests/e2e/test-account.local.mjs` (gitignored) con le credenziali di quell'account — vedi i commenti nel file per come crearlo.
   - I test puliscono da soli i messaggi che creano, usando il pulsante di eliminazione dell'app stessa.
-  - Al primo utilizzo, scarica il browser Chromium di Playwright con `npx playwright install chromium`.
+  - Al primo utilizzo, scarica il browser Chromium di Playwright con `npx --prefix tests playwright install chromium`.
