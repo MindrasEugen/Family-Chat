@@ -314,9 +314,18 @@ function ensureDeviceNamePrompted() {
 // ad ogni apertura dell'app, risparmiando chiamate e costo verso Mistral.
 // Le chiavi sono per messageId (UUID globalmente unico su tutte le camere,
 // che condividono la stessa tabella "messages"), nessun rischio di collisione.
+//
+// Prefisso "v2": la Edge Function translate-message aveva un bug (risolto
+// il 2026-09-04) per cui certe parole/frasi tornavano identiche
+// all'originale invece che tradotte. Chi aveva già aperto la chat prima
+// del fix si è ritrovato quella "traduzione" sbagliata salvata qui per
+// sempre, dato che questa cache non si invalida mai da sola — anche dopo
+// il fix, i messaggi già in cache restavano bloccati sul risultato
+// vecchio. Il cambio di prefisso rende invisibili le voci pre-fix (restano
+// in localStorage, semplicemente ignorate) senza doverle ripulire a mano.
 function getCachedTranslation(messageId, lang) {
   try {
-    return localStorage.getItem(`translation_${messageId}_${lang}`);
+    return localStorage.getItem(`translation_v2_${messageId}_${lang}`);
   } catch {
     return null;
   }
@@ -324,7 +333,7 @@ function getCachedTranslation(messageId, lang) {
 
 function setCachedTranslation(messageId, lang, text) {
   try {
-    localStorage.setItem(`translation_${messageId}_${lang}`, text);
+    localStorage.setItem(`translation_v2_${messageId}_${lang}`, text);
   } catch {}
 }
 
