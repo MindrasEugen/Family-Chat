@@ -31,7 +31,19 @@ self.addEventListener("activate", (event) => {
 let activeRoomId = null;
 
 self.addEventListener("message", (event) => {
-  if (event.data?.type === "ACTIVE_ROOM") activeRoomId = event.data.roomId || null;
+  if (event.data?.type !== "ACTIVE_ROOM") return;
+  activeRoomId = event.data.roomId || null;
+  // L'app manda questo messaggio ogni volta che torna in primo piano o
+  // cambia camera, non solo quando si tocca una notifica: senza chiuderle
+  // qui, le notifiche già mostrate restavano nel pannello di sistema anche
+  // dopo aver aperto l'app e letto i messaggi, e andavano cancellate a
+  // mano. Da qui in poi il badge dei non letti nella lista camere prende
+  // il testimone della notifica di sistema, che ha già fatto il suo lavoro.
+  event.waitUntil(
+    self.registration.getNotifications().then((notifications) => {
+      notifications.forEach((n) => n.close());
+    })
+  );
 });
 
 // Notifiche push: arrivano anche ad app chiusa o schermo spento, a
