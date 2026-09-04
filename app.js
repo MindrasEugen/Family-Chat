@@ -315,17 +315,16 @@ function ensureDeviceNamePrompted() {
 // Le chiavi sono per messageId (UUID globalmente unico su tutte le camere,
 // che condividono la stessa tabella "messages"), nessun rischio di collisione.
 //
-// Prefisso "v2": la Edge Function translate-message aveva un bug (risolto
-// il 2026-09-04) per cui certe parole/frasi tornavano identiche
-// all'originale invece che tradotte. Chi aveva già aperto la chat prima
-// del fix si è ritrovato quella "traduzione" sbagliata salvata qui per
-// sempre, dato che questa cache non si invalida mai da sola — anche dopo
-// il fix, i messaggi già in cache restavano bloccati sul risultato
-// vecchio. Il cambio di prefisso rende invisibili le voci pre-fix (restano
-// in localStorage, semplicemente ignorate) senza doverle ripulire a mano.
+// Prefisso "v3" (bump dal precedente "v2" del 2026-09-04): quel fix aveva
+// risolto solo il bug generico dell'eco su parole comuni, ma non il caso
+// "sì" -> francese (vedi prompt della Edge Function), e soprattutto non
+// impediva a un eco/fallimento futuro di restare bloccato in cache per
+// sempre (translateText metteva in cache qualunque risposta, eco incluso).
+// Ogni bump invalida solo le voci vecchie (restano in localStorage,
+// semplicemente ignorate), senza doverle ripulire a mano.
 function getCachedTranslation(messageId, lang) {
   try {
-    return localStorage.getItem(`translation_v2_${messageId}_${lang}`);
+    return localStorage.getItem(`translation_v3_${messageId}_${lang}`);
   } catch {
     return null;
   }
@@ -333,7 +332,7 @@ function getCachedTranslation(messageId, lang) {
 
 function setCachedTranslation(messageId, lang, text) {
   try {
-    localStorage.setItem(`translation_v2_${messageId}_${lang}`, text);
+    localStorage.setItem(`translation_v3_${messageId}_${lang}`, text);
   } catch {}
 }
 
@@ -346,8 +345,18 @@ async function translateText(client, messageId, text) {
       body: { text, targetLang: lang },
     });
     if (error || !data?.translatedText) return null;
-    setCachedTranslation(messageId, lang, data.translatedText);
-    return data.translatedText;
+    const translated = data.translatedText;
+    // Un "eco" (testo tornato identico all'originale) verso una lingua
+    // diversa dall'italiano è quasi sempre un fallimento della traduzione
+    // (vedi il caso "sì" nel prompt lato server), non un risultato valido:
+    // non lo mettiamo in cache, così il prossimo che legge quel messaggio
+    // ritenta dal vivo invece di restare bloccato sull'eco per sempre.
+    // Per un lettore con lingua italiana l'eco è invece la norma (i
+    // messaggi di famiglia sono perlopiù già in italiano): lì la cache
+    // resta piena per non moltiplicare le chiamate a Mistral inutilmente.
+    const isSuspiciousEcho = lang !== "it" && translated.trim().toLowerCase() === text.trim().toLowerCase();
+    if (!isSuspiciousEcho) setCachedTranslation(messageId, lang, translated);
+    return translated;
   } catch {
     return null;
   }
@@ -818,7 +827,11 @@ function startReloginFlow(room) {
   pendingStorageKey = room.storageKey;
   authBackBtn.classList.remove("hidden");
   setMessage(authMessage, "");
-  emailInput.value = "";
+  // Precompila l'email (nota dal login precedente, salvata in room.label):
+  // con una password condivisa in famiglia tra più telefoni, dover
+  // riscrivere anche l'email da zero ogni volta che una camera chiede il
+  // re-login è un'occasione in più per sbagliare qualcosa di fretta.
+  emailInput.value = room.label && room.label.includes("@") ? room.label : "";
   passwordInput.value = "";
   showScreen("auth");
 }
@@ -849,8 +862,18 @@ async function removeRoom(storageKey) {
   }
 }
 
-function notifyServiceWorkerActiveRoom(userId) {
-  navigator.serviceWorker.controller?.postMessage({ type: "ACTIVE_ROOM", roomId: userId || null });
+// Usa navigator.serviceWorker.ready invece di .controller: subito dopo il
+// primo avvio (o dopo un aggiornamento del SW) .controller può essere
+// ancora null per un istante, e postMessage su null fallisce in silenzio,
+// senza errori — le notifiche di sistema già mostrate restano bloccate nel
+// pannello anche dopo aver aperto/riletto la chat. .ready aspetta che un
+// service worker sia effettivamente attivo prima di mandare il messaggio.
+async function notifyServiceWorkerActiveRoom(userId) {
+  if (!("serviceWorker" in navigator)) return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    registration.active?.postMessage({ type: "ACTIVE_ROOM", roomId: userId || null });
+  } catch {}
 }
 
 function refreshChatHeader(room) {
