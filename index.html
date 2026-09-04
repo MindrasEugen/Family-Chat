@@ -90,7 +90,9 @@
     </div>
 
     <form id="chat-form">
-      <label for="photo-input" class="attach-btn" aria-label="Allega una foto">📷</label>
+      <label for="photo-camera-input" class="attach-btn" aria-label="Scatta una foto">📷</label>
+      <input id="photo-camera-input" type="file" accept="image/*" capture="environment" hidden>
+      <label for="photo-input" class="attach-btn" aria-label="Allega una foto dalla galleria">🖼️</label>
       <input id="photo-input" type="file" accept="image/*" hidden>
       <input id="message-input" type="text" placeholder="Scrivi un messaggio..." maxlength="1000" autocomplete="off">
       <button type="submit" class="send-btn" aria-label="Invia messaggio">➤</button>

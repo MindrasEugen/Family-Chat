@@ -37,6 +37,7 @@ const messageInput = document.getElementById("message-input");
 const messageList = document.getElementById("message-list");
 const loadingOverlay = document.getElementById("loading-overlay");
 const photoInput = document.getElementById("photo-input");
+const photoCameraInput = document.getElementById("photo-camera-input");
 const photoPreview = document.getElementById("photo-preview");
 const photoPreviewImg = document.getElementById("photo-preview-img");
 const photoPreviewRemoveBtn = document.getElementById("photo-preview-remove");
@@ -87,11 +88,42 @@ function scrollToBottom() {
   messageList.scrollTop = messageList.scrollHeight;
 }
 
+// createImageBitmap() non decodifica in modo affidabile alcuni formati su
+// certe combinazioni browser/dispositivo (es. HEIC delle foto iPhone su
+// alcune versioni di Safari/Android), pur essendo lo stesso file che il tag
+// <img> dell'anteprima mostra correttamente. Se fallisce, riproviamo con la
+// pipeline di decodifica di <img>, che copre praticamente tutto ciò che
+// l'anteprima è già riuscita a mostrare all'utente.
+async function decodeImageForCanvas(file) {
+  try {
+    return await createImageBitmap(file);
+  } catch {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(img);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve(null);
+      };
+      img.src = url;
+    });
+  }
+}
+
 // Ridimensiona e ricomprime la foto lato client prima dell'upload:
 // le foto scattate da un cellulare possono pesare diversi MB, inaccettabile su rete mobile.
+// Ritorna null se il file non è decodificabile in alcun modo: il chiamante
+// deve trattarlo come un errore esplicito, non tentare comunque l'upload
+// dell'originale (altri device potrebbero non riuscire a visualizzarlo).
 async function compressImage(file, maxDimension = 1600, quality = 0.8) {
-  const bitmap = await createImageBitmap(file);
-  let { width, height } = bitmap;
+  const source = await decodeImageForCanvas(file);
+  if (!source) return null;
+  let width = source.naturalWidth ?? source.width;
+  let height = source.naturalHeight ?? source.height;
   if (width > maxDimension || height > maxDimension) {
     const scale = maxDimension / Math.max(width, height);
     width = Math.round(width * scale);
@@ -100,7 +132,7 @@ async function compressImage(file, maxDimension = 1600, quality = 0.8) {
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
-  canvas.getContext("2d").drawImage(bitmap, 0, 0, width, height);
+  canvas.getContext("2d").drawImage(source, 0, 0, width, height);
   return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
 }
 
@@ -487,6 +519,7 @@ function onRoomMessageDelete(room, id) {
 function clearPhotoSelection() {
   selectedPhotoFile = null;
   photoInput.value = "";
+  photoCameraInput.value = "";
   if (previewObjectUrl) {
     URL.revokeObjectURL(previewObjectUrl);
     previewObjectUrl = null;
@@ -847,12 +880,14 @@ logoutBtn.addEventListener("click", async () => {
   showLoading(false);
 });
 
-photoInput.addEventListener("change", () => {
-  const file = photoInput.files[0];
+// Stesso handler per entrambi gli input (fotocamera e galleria): dal punto
+// in cui l'utente ha scelto/scattato un file il flusso è identico.
+function handlePhotoInputChange(input) {
+  const file = input.files[0];
   if (!file) return;
   if (!file.type.startsWith("image/")) {
     setMessage(chatMessage, "Puoi allegare solo immagini.", "error");
-    photoInput.value = "";
+    input.value = "";
     return;
   }
   setMessage(chatMessage, "");
@@ -861,7 +896,10 @@ photoInput.addEventListener("change", () => {
   previewObjectUrl = URL.createObjectURL(file);
   photoPreviewImg.src = previewObjectUrl;
   photoPreview.classList.remove("hidden");
-});
+}
+
+photoInput.addEventListener("change", () => handlePhotoInputChange(photoInput));
+photoCameraInput.addEventListener("change", () => handlePhotoInputChange(photoCameraInput));
 
 photoPreviewRemoveBtn.addEventListener("click", () => {
   clearPhotoSelection();
@@ -879,6 +917,7 @@ chatForm.addEventListener("submit", async (e) => {
     let imagePath = null;
     if (selectedPhotoFile) {
       const compressed = await compressImage(selectedPhotoFile);
+      if (!compressed) throw new Error("PHOTO_DECODE_FAILED");
       imagePath = `${room.userId}/${crypto.randomUUID()}.jpg`;
       const { error: uploadError } = await room.client.storage
         .from(PHOTO_BUCKET)
@@ -890,7 +929,8 @@ chatForm.addEventListener("submit", async (e) => {
     messageInput.value = "";
     clearPhotoSelection();
   } catch (err) {
-    setMessage(chatMessage, "Errore nell'invio del messaggio.", "error");
+    const errorText = err?.message === "PHOTO_DECODE_FAILED" ? "Impossibile elaborare questa foto. Prova con un'altra immagine." : "Errore nell'invio del messaggio.";
+    setMessage(chatMessage, errorText, "error");
   } finally {
     showLoading(false);
   }
