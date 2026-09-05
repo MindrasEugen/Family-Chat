@@ -11,6 +11,20 @@ Note di lavoro non legate a un task specifico: filosofia di sviluppo, debito tec
 - Oggi: chat per famiglia, con "camere" per gestire più gruppi familiari (o più famiglie) sullo stesso device.
 - Possibile domani: una chat con traduzione automatica integrata potrebbe essere utile a un pubblico più ampio, non solo alla famiglia. Non è una decisione presa, ma un'ipotesi abbastanza solida da tenere in mente nelle scelte architetturali — vedi sotto.
 
+## Sessione 2026-09-05: fix mirati su v1 (in attesa della riscrittura React)
+
+Diagnosi completa di sette problemi riportati dall'utente, poi fix mirati sui cinque risolvibili senza toccare il modello di account condiviso (vedi `PROMPT_REACT_REWRITE.md`, gitignored, per il modello v2):
+
+- **Notifiche che non sparivano al primo avvio** (`app.js`, funzione `boot()`): il listener `visibilitychange` non scatta mai su un caricamento a freddo già visibile (richiede una transizione hidden→visible). Aggiunta una chiamata esplicita a `notifyServiceWorkerActiveRoom(null)` in `boot()` quando l'avvio non apre una camera specifica.
+- **Notifiche anche a chat aperta / sui propri messaggi** (due cause, entrambe corrette): (1) `send-push` non escludeva mai il dispositivo mittente dai destinatari — aggiunta la colonna `messages.sender_endpoint` (migrazione applicata), valorizzata da `app.js` all'invio, usata da `send-push` per escludere quell'endpoint; (2) `activeRoomId` in `sw.js` viveva in una variabile di modulo, azzerata ad ogni riavvio del service worker (terminato dal browser dopo inattività) — spostato in IndexedDB, che sopravvive al riavvio.
+- **Traduzione rumeno e altre lingue imprecisa** (`translate-message` Edge Function): `LANG_NAMES` copriva solo fr/en, qualunque altra lingua del dispositivo (es. rumeno) riceveva il codice ISO grezzo nel prompt invece di un nome lingua. Estesa la mappa a ~40 lingue comuni. Nota a margine: un primo tentativo di correggere anche il `FEW_SHOT_NOTE` (aggiunto in una sessione precedente, sbagliato per lingue diverse da fr/en) ha introdotto una regressione verificata (bare "sì"→rumeno restituiva "salut", un saluto, invece di "da") — corretto con un'ancora esplicita sul significato ("conferma affermativa, non un saluto"), riverificato 3/3 corretto dopo il fix. Resta un'imprecisione minore isolata non risolta in questa sessione: "ciao"→rumeno resta "noroc" (sbagliato, non un saluto reale) — qualità del modello, non un bug di codice.
+- **Messaggi persi/fuori ordine con scritture concorrenti** (`app.js`, `loadMessages`/`renderMessage`): `loadMessages()` svuotava la lista messaggi prima di attendere il fetch della cronologia, e un evento realtime arrivato in quella finestra veniva "superato" fuori ordine dai messaggi più vecchi caricati dopo. Ora la lista si svuota solo quando si cambia davvero camera (tracciato via `messageList.dataset.roomKey`), e i messaggi si inseriscono nella posizione cronologica corretta (`insertMessageInOrder`) invece di essere sempre accodati in fondo. Verificato con un test isolato che riproduce esattamente lo scenario (evento dal vivo per il messaggio più recente arrivato prima della cronologia più vecchia): ordine finale corretto, nessun duplicato.
+- **Ricreazione inutile del canale realtime** (priorità bassa, `resyncAllRooms`): ricreava il canale da zero ad ogni `visibilitychange`/`online` anche se sano. Ora ricrea solo se `channel.state !== "joined"` — nota: questo è lo stato noto al client, non una garanzia di socket vivo, quindi il backstop `scheduleRealtimeResubscribe`/`catchUpMessages` resta comunque necessario.
+
+**Non toccato deliberatamente**: il modello di account condiviso per camera (causa dei problemi "sessioni che scadono" e, di riflesso, "realtime non affidabile") — decisione di prodotto, non bug di codice, rimandata alla riscrittura React.
+
+**Verifica**: `npm test` (Vitest, tests/) e `npm run test:e2e` (Playwright, contro il vero Supabase) entrambi verdi dopo i fix — nessuna regressione sui casi già coperti. Nota corretta: una precedente affermazione ("20 test Vitest falliscono per un problema d'ambiente preesistente") era sbagliata — causata da un'invocazione diretta (`npx vitest run`) che salta la variabile d'ambiente richiesta (`NODE_OPTIONS=--localstorage-file=...`, impostata dallo script `npm test`); con l'invocazione corretta tutti i 27 test passano.
+
 ## Debito tecnico noto
 
 - **Test automatici: due passi fatti, resto ancora scoperto** (vedi Filosofia sopra).
@@ -25,4 +39,4 @@ Note di lavoro non legate a un task specifico: filosofia di sviluppo, debito tec
 
 ## Idee in sospeso (non urgenti)
 
-- **Migrazione a React** (o struttura a componenti equivalente): aiuterebbe soprattutto a eliminare la sincronizzazione manuale stato↔DOM (lista camere, badge non letti, cambio schermata), che oggi è il punto più fragile del codice. È una riscrittura, non un refactor — da pianificare con calma se/quando l'app cresce oltre l'uso familiare attuale, non da fare "di corsa".
+- **Migrazione a React** (o struttura a componenti equivalente): aiuterebbe soprattutto a eliminare la sincronizzazione manuale stato↔DOM (lista camere, badge non letti, cambio schermata), che oggi è il punto più fragile del codice. È una riscrittura, non un refactor. **Decisa il 2026-09-05**: si farà, in una cartella separata, in parallelo a questa v1 che nel frattempo resta in produzione.

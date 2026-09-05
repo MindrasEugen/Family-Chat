@@ -28,11 +28,57 @@ self.addEventListener("activate", (event) => {
 // Il client avvisa il SW di quale camera è attualmente in primo piano,
 // così la notifica push di quella stessa camera può essere soppressa
 // senza sopprimere anche quelle delle altre camere in background.
-let activeRoomId = null;
+//
+// Persistito in IndexedDB invece che in una semplice variabile: il browser
+// termina un service worker inattivo e lo riesegue da zero al prossimo
+// evento, azzerando qualunque variabile di modulo. Una "let activeRoomId"
+// tornava quindi null ogni volta che il SW veniva riavviato tra un
+// aggiornamento di stato e l'arrivo di una push — facendo fallire il
+// confronto "stessa camera aperta" anche a chat aperta sulla camera
+// giusta. IndexedDB sopravvive al riavvio del SW, la variabile no.
+const STATE_DB_NAME = "chat-app-sw-state";
+const STATE_STORE_NAME = "kv";
+const ACTIVE_ROOM_ID_KEY = "activeRoomId";
+
+function openStateDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(STATE_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore(STATE_STORE_NAME);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function setPersistedActiveRoomId(roomId) {
+  try {
+    const db = await openStateDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STATE_STORE_NAME, "readwrite");
+      tx.objectStore(STATE_STORE_NAME).put(roomId, ACTIVE_ROOM_ID_KEY);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {}
+}
+
+async function getPersistedActiveRoomId() {
+  try {
+    const db = await openStateDb();
+    return await new Promise((resolve, reject) => {
+      const req = db.transaction(STATE_STORE_NAME, "readonly").objectStore(STATE_STORE_NAME).get(ACTIVE_ROOM_ID_KEY);
+      req.onsuccess = () => resolve(req.result ?? null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    return null;
+  }
+}
 
 self.addEventListener("message", (event) => {
   if (event.data?.type !== "ACTIVE_ROOM") return;
-  activeRoomId = event.data.roomId || null;
+  const roomId = event.data.roomId || null;
   // L'app manda questo messaggio ogni volta che torna in primo piano o
   // cambia camera, non solo quando si tocca una notifica: senza chiuderle
   // qui, le notifiche già mostrate restavano nel pannello di sistema anche
@@ -40,9 +86,12 @@ self.addEventListener("message", (event) => {
   // mano. Da qui in poi il badge dei non letti nella lista camere prende
   // il testimone della notifica di sistema, che ha già fatto il suo lavoro.
   event.waitUntil(
-    self.registration.getNotifications().then((notifications) => {
-      notifications.forEach((n) => n.close());
-    })
+    Promise.all([
+      setPersistedActiveRoomId(roomId),
+      self.registration.getNotifications().then((notifications) => {
+        notifications.forEach((n) => n.close());
+      }),
+    ])
   );
 });
 
@@ -57,7 +106,10 @@ self.addEventListener("push", (event) => {
   } catch {}
 
   event.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
+    Promise.all([
+      self.clients.matchAll({ type: "window", includeUncontrolled: true }),
+      getPersistedActiveRoomId(),
+    ]).then(([clientList, activeRoomId]) => {
       // Controlla se almeno una finestra è visibile o in focus
       const hasVisibleClient = clientList.some(
         (client) => client.focused || client.visibilityState === "visible"
@@ -65,7 +117,11 @@ self.addEventListener("push", (event) => {
 
       // Sopprimi solo se l'app è visibile ED è aperta proprio sulla camera
       // del messaggio: se è aperta su un'altra camera (o sulla lista), la
-      // notifica di questa deve comunque comparire.
+      // notifica di questa deve comunque comparire. Seconda rete di
+      // sicurezza rispetto all'esclusione lato server in send-push (che
+      // copre solo "non notificare chi ha scritto"): questa copre invece
+      // "non notificare chi sta già guardando questa camera in questo
+      // momento", utile per i messaggi di ALTRI membri della stessa camera.
       const sameRoomOpen = hasVisibleClient && data.room_id && activeRoomId === data.room_id;
       if (sameRoomOpen) {
         return Promise.resolve();

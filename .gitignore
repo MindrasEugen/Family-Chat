@@ -1,5 +1,6 @@
 *.bak
 PROMPT_ORIGINALE.md
+PROMPT_REACT_REWRITE.md
 .DS_Store
 Thumbs.db
 node_modules/

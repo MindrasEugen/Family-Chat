@@ -218,3 +218,14 @@ end $$;
 
 alter table public.push_subscriptions
   add constraint push_subscriptions_endpoint_user_id_key unique (endpoint, user_id);
+
+-- ---------------------------------------------------------
+-- Fix: niente più notifica push a chi ha appena inviato il messaggio
+-- ---------------------------------------------------------
+-- send-push filtra push_subscriptions solo per user_id ("camera"): con più
+-- dispositivi sulla stessa camera, chi scrive riceveva anche la push del
+-- proprio messaggio. sender_endpoint registra l'endpoint push del
+-- dispositivo mittente al momento dell'invio (app.js), così send-push può
+-- escluderlo dai destinatari. Nullable: resta null se il mittente non ha
+-- notifiche attive in quel momento (send-push allora non esclude nessuno).
+alter table public.messages add column if not exists sender_endpoint text;

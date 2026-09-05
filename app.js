@@ -362,12 +362,33 @@ async function translateText(client, messageId, text) {
   }
 }
 
+// Inserisce l'elemento nella posizione cronologicamente corretta rispetto
+// a quanto già presente in messageList, invece di accodarlo sempre in
+// fondo: necessario perché una camera resta sottoscritta al realtime anche
+// mentre loadMessages() sta ancora caricando la cronologia (vedi commento
+// lì) — un evento dal vivo può quindi arrivare ed essere renderizzato
+// PRIMA che il caricamento completo finisca, e senza un inserimento
+// ordinato finirebbe fuori posto rispetto ai messaggi più vecchi caricati
+// dopo di lui.
+function insertMessageInOrder(li, message) {
+  const createdAt = message.created_at;
+  const existing = messageList.querySelectorAll("li[data-created-at]");
+  for (const el of existing) {
+    if (el.dataset.createdAt > createdAt) {
+      messageList.insertBefore(li, el);
+      return;
+    }
+  }
+  messageList.appendChild(li);
+}
+
 async function renderMessage(room, message) {
   if (messageList.querySelector(`li[data-id="${message.id}"]`)) return;
   const li = document.createElement("li");
   li.className = "chat-bubble";
   li.dataset.id = message.id;
   li.dataset.imagePath = message.image_path || "";
+  li.dataset.createdAt = message.created_at;
 
   const senderHtml = message.device_name ? `<span class="bubble-sender">${escapeHtml(message.device_name)}</span>` : "";
   const imgHtml = message.image_path
@@ -377,7 +398,7 @@ async function renderMessage(room, message) {
   const time = new Date(message.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
   li.innerHTML = `${senderHtml}${imgHtml}${textHtml}<div class="bubble-footer"><span class="bubble-time">${time}</span><button class="msg-delete-btn" data-id="${message.id}" aria-label="Elimina messaggio">🗑</button></div>`;
-  messageList.appendChild(li);
+  insertMessageInOrder(li, message);
   requestAnimationFrame(() => {
     li.classList.add("enter");
   });
@@ -432,8 +453,21 @@ function removeMessageFromList(id) {
 }
 
 async function loadMessages(room) {
+  // Svuota la lista solo se si sta davvero cambiando camera (messageList
+  // conteneva un'altra camera, o nessuna): può succedere aprendo una camera
+  // diversa da una notifica mentre un'altra è già aperta, senza passare da
+  // closeRoomToList(). Se invece è la STESSA camera già mostrata, non
+  // svuotiamo prima di aspettare il fetch — era quello a creare la finestra
+  // in cui un messaggio arrivato dal vivo (la camera resta sottoscritta al
+  // realtime anche mentre questa fetch è in corso) veniva accodato su una
+  // lista già vuota, e poi "superato" fuori ordine dai messaggi più vecchi
+  // caricati dopo. renderMessage scarta comunque i duplicati per id, quindi
+  // il merge con quanto già presente è sicuro.
+  if (messageList.dataset.roomKey !== room.storageKey) {
+    messageList.innerHTML = "";
+    messageList.dataset.roomKey = room.storageKey;
+  }
   showLoading(true);
-  messageList.innerHTML = "";
   const { data, error } = await room.client
     .from("messages")
     .select("*")
@@ -551,6 +585,24 @@ async function unsubscribeSharedPushEndpoint() {
     const subscription = await registration.pushManager.getSubscription();
     if (subscription) await subscription.unsubscribe();
   } catch {}
+}
+
+// Endpoint push di QUESTO dispositivo (condiviso da tutte le camere, vedi
+// sopra), da allegare al messaggio inviato: permette a send-push di
+// escludere questo stesso dispositivo dai destinatari della notifica,
+// invece di mandare a chi scrive anche la push del proprio messaggio.
+// Ritorna null se le notifiche non sono attive/sottoscritte in questo
+// momento — send-push in quel caso non esclude nessuno, comportamento
+// invariato rispetto a prima di questa fix.
+async function getCurrentPushEndpoint() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return null;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    return subscription?.endpoint || null;
+  } catch {
+    return null;
+  }
 }
 
 // Il canale realtime può cadere senza preavviso (schermo del telefono
@@ -1065,7 +1117,10 @@ chatForm.addEventListener("submit", async (e) => {
       const { error: uploadError } = await room.client.storage.from(PHOTO_BUCKET).upload(imagePath, toUpload, { contentType });
       if (uploadError) throw uploadError;
     }
-    const { error } = await room.client.from("messages").insert({ content: text || null, image_path: imagePath, device_name: getDeviceName() });
+    const senderEndpoint = await getCurrentPushEndpoint();
+    const { error } = await room.client
+      .from("messages")
+      .insert({ content: text || null, image_path: imagePath, device_name: getDeviceName(), sender_endpoint: senderEndpoint });
     if (error) throw error;
     messageInput.value = "";
     clearPhotoSelection();
@@ -1152,9 +1207,19 @@ window.addEventListener("online", resyncAllRooms);
 // Richiamata quando si torna sulla tab/app o quando torna la rete: sono i
 // due momenti in cui una connessione WebSocket morta in silenzio va
 // rimpiazzata, senza dover ricaricare tutta la pagina.
+// Ricrea il canale solo se non risulta "joined": prima veniva rifatto da
+// zero ad ogni chiamata, anche quando era ancora sano, introducendo una
+// breve finestra senza sottoscrizione attiva ad ogni ritorno in foreground.
+// Nota: "joined" è lo stato noto al client, non una garanzia che il socket
+// sia davvero vivo (una rete che cade in silenzio può lasciare lo stato
+// locale disallineato da quello reale) — per questo restano comunque il
+// backstop di scheduleRealtimeResubscribe/catchUpMessages sopra, che
+// intervengono quando il canale segnala esplicitamente un problema.
 function resyncAllRooms() {
   for (const room of rooms.values()) {
-    if (room.userId && room.chatStarted) subscribeRealtimeForRoom(room);
+    if (room.userId && room.chatStarted && room.channel?.state !== "joined") {
+      subscribeRealtimeForRoom(room);
+    }
   }
 }
 
@@ -1170,6 +1235,12 @@ async function boot() {
   await Promise.all(registry.filter((entry) => !rooms.has(entry.storageKey)).map(initRoomFromRegistryEntry));
   renderRoomList();
   maybeOpenRoomFromUrl();
+  // Se l'avvio non apre una camera specifica (utente riaperto dall'icona,
+  // resta sulla lista camere), il listener "visibilitychange" non scatta
+  // mai qui: richiede una transizione hidden->visible, non un caricamento
+  // già visibile fin dall'inizio. Senza questa chiamata le notifiche di
+  // sistema restavano nel pannello anche dopo aver aperto l'app.
+  if (!activeRoomKey) notifyServiceWorkerActiveRoom(null);
 }
 
 boot();
